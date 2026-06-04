@@ -1,0 +1,15 @@
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+downloads/
+tools/
+R/
+*.exe
+*.Rdata
+dist/*.zip
+*.log
+*.tmp
+qa_screenshot*.png
+release/
+github_publish/

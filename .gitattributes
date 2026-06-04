@@ -1,0 +1,7 @@
+*.R text eol=lf
+*.md text eol=lf
+*.cs text eol=crlf
+*.bat text eol=crlf
+*.zip binary
+*.exe binary
+*.Rdata binary
