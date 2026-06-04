@@ -1,5 +1,22 @@
 # Release Notes
 
+## v1.1.0
+
+### 新增功能
+
+- 增加 WGCNA 共表达模块分析。
+- 增加 PPI 网络分析，默认支持同目录 `string_interactions.tsv`。
+- 增加 GSEA GO 富集分析，支持 BP、MF、CC。
+- 在结果页增加“最终建议”，说明当前样本更适合采用哪条分析主线。
+- 更新依赖安装脚本，补充 `WGCNA`、`igraph`、`clusterProfiler`、`org.Hs.eg.db`、`enrichplot`。
+
+### 示例数据验证
+
+- 差异分析：上调 1624 个，下调 1179 个。
+- GSEA：靠前结果主要集中在细胞周期、姐妹染色单体分离、染色体分离相关过程。
+- WGCNA：turquoise 模块偏向 Disease，blue 模块偏向 Normal。
+- PPI：高置信默认参数下 TOP2A、PRC1、EZH2 等位于 hub 前列。
+
 ## v1.0.0
 
 首个公开发布版本。
@@ -16,7 +33,3 @@
 - 火山图和热图颜色调整。
 - 热图行聚类和列聚类开关。
 - 缺少 R 时可通过“检查依赖”下载并安装到软件同目录。
-
-### 打包文件
-
-- `dist/差异分析软件.zip`

@@ -2,7 +2,8 @@ options(shiny.maxRequestSize = 500 * 1024^2)
 
 required_packages <- c(
   "shiny", "limma", "ggplot2", "readr", "readxl", "DT", "pheatmap",
-  "matrixStats", "ggrepel", "colourpicker"
+  "matrixStats", "ggrepel", "colourpicker", "WGCNA", "igraph",
+  "clusterProfiler", "org.Hs.eg.db", "enrichplot"
 )
 
 missing_packages <- required_packages[
@@ -18,6 +19,7 @@ if (length(missing_packages) > 0) {
 
 library(shiny)
 library(ggplot2)
+suppressPackageStartupMessages(library(WGCNA))
 
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
@@ -452,6 +454,478 @@ heatmap_matrix <- function(result, top_n = 50) {
   n[row_sd > 0 & is.finite(row_sd), , drop = FALSE]
 }
 
+expression_with_symbols <- function(result) {
+  mat <- result$mat
+  deg <- result$deg
+  labels <- deg$symbol[match(rownames(mat), deg$row_id)]
+  labels[is.na(labels) | !nzchar(labels)] <- rownames(mat)[is.na(labels) | !nzchar(labels)]
+  rownames(mat) <- make.unique(labels)
+  mat
+}
+
+run_wgcna_analysis <- function(result, top_n = 5000, soft_power = 0,
+                               min_module_size = 30, merge_cut_height = 0.25) {
+  tryCatch(
+    WGCNA::allowWGCNAThreads(nThreads = 2),
+    error = function(e) {
+      tryCatch(WGCNA::disableWGCNAThreads(), error = function(...) NULL)
+    }
+  )
+  mat <- expression_with_symbols(result)
+  mat <- impute_rows_for_plot(mat)
+  vars <- matrixStats::rowVars(mat)
+  keep <- is.finite(vars) & vars > 0
+  mat <- mat[keep, , drop = FALSE]
+  vars <- vars[keep]
+  if (nrow(mat) > top_n) {
+    mat <- mat[order(vars, decreasing = TRUE)[seq_len(top_n)], , drop = FALSE]
+  }
+  if (nrow(mat) < 50 || ncol(mat) < 8) {
+    stop("WGCNA 至少建议 50 个基因和 8 个样本。当前过滤后数据不足。")
+  }
+
+  dat_expr <- as.data.frame(t(mat), check.names = FALSE)
+  gsg <- WGCNA::goodSamplesGenes(dat_expr, verbose = 0)
+  if (!gsg$allOK) {
+    dat_expr <- dat_expr[gsg$goodSamples, gsg$goodGenes, drop = FALSE]
+  }
+  groups <- result$groups[match(rownames(dat_expr), colnames(result$mat))]
+  trait <- ifelse(groups == result$treatment_group, 1, 0)
+  names(trait) <- rownames(dat_expr)
+
+  powers <- c(1:10, seq(12, 20, 2))
+  chosen_power <- as.integer(soft_power)
+  sft_table <- NULL
+  if (!is.finite(chosen_power) || chosen_power <= 0) {
+    sft <- WGCNA::pickSoftThreshold(
+      dat_expr,
+      powerVector = powers,
+      networkType = "signed",
+      verbose = 0
+    )
+    sft_table <- as.data.frame(sft$fitIndices)
+    fit_col <- "SFT.R.sq"
+    candidates <- sft_table$Power[is.finite(sft_table[[fit_col]]) & sft_table[[fit_col]] >= 0.8]
+    if (length(candidates) > 0) {
+      chosen_power <- candidates[1]
+    } else {
+      chosen_power <- sft_table$Power[which.max(sft_table[[fit_col]])]
+    }
+    if (!is.finite(chosen_power) || length(chosen_power) == 0) {
+      chosen_power <- 6
+    }
+  }
+
+  net <- WGCNA::blockwiseModules(
+    dat_expr,
+    power = chosen_power,
+    networkType = "signed",
+    TOMType = "signed",
+    minModuleSize = min_module_size,
+    reassignThreshold = 0,
+    mergeCutHeight = merge_cut_height,
+    numericLabels = FALSE,
+    pamRespectsDendro = FALSE,
+    saveTOMs = FALSE,
+    verbose = 0
+  )
+
+  module_colors <- net$colors
+  names(module_colors) <- colnames(dat_expr)
+  MEs <- WGCNA::orderMEs(WGCNA::moduleEigengenes(dat_expr, module_colors)$eigengenes)
+  module_cor <- as.numeric(stats::cor(MEs, trait, use = "p"))
+  module_p <- as.numeric(WGCNA::corPvalueStudent(module_cor, nrow(dat_expr)))
+  module_names <- sub("^ME", "", colnames(MEs))
+
+  deg <- result$deg
+  gene_table <- data.frame(
+    symbol = names(module_colors),
+    module = as.character(module_colors),
+    stringsAsFactors = FALSE
+  )
+  gene_table$change <- deg$change[match(gene_table$symbol, deg$symbol)]
+  gene_table$logFC <- deg$logFC[match(gene_table$symbol, deg$symbol)]
+  gene_table$P.Value <- deg$P.Value[match(gene_table$symbol, deg$symbol)]
+  gene_table$change <- as.character(gene_table$change)
+  gene_table$change[is.na(gene_table$change)] <- "not_tested"
+
+  kme <- WGCNA::signedKME(dat_expr, MEs, outputColumnName = "kME")
+  gene_table$kME <- NA_real_
+  for (module in unique(gene_table$module)) {
+    col <- paste0("kME", module)
+    if (col %in% colnames(kme)) {
+      idx <- gene_table$module == module
+      gene_table$kME[idx] <- kme[gene_table$symbol[idx], col]
+    }
+  }
+
+  module_summary <- data.frame(
+    module = module_names,
+    gene_count = as.integer(table(factor(module_colors, levels = module_names))),
+    trait_correlation = module_cor,
+    p_value = module_p,
+    bias = ifelse(module_cor > 0, result$treatment_group, result$control_group),
+    stringsAsFactors = FALSE
+  )
+  module_summary$direction <- ifelse(
+    module_summary$trait_correlation > 0,
+    paste0("偏向 ", result$treatment_group),
+    paste0("偏向 ", result$control_group)
+  )
+  module_summary$strength <- cut(
+    abs(module_summary$trait_correlation),
+    breaks = c(-Inf, 0.3, 0.5, 0.7, Inf),
+    labels = c("weak", "moderate", "strong", "very strong")
+  )
+  module_summary$up_genes <- vapply(module_summary$module, function(module) {
+    sum(gene_table$module == module & gene_table$change == "up", na.rm = TRUE)
+  }, integer(1))
+  module_summary$down_genes <- vapply(module_summary$module, function(module) {
+    sum(gene_table$module == module & gene_table$change == "down", na.rm = TRUE)
+  }, integer(1))
+  module_summary <- module_summary[order(module_summary$p_value, -abs(module_summary$trait_correlation)), ]
+
+  hub_genes <- gene_table[gene_table$module != "grey" & is.finite(gene_table$kME), , drop = FALSE]
+  hub_genes <- hub_genes[order(hub_genes$module, -abs(hub_genes$kME)), , drop = FALSE]
+  hub_genes <- do.call(rbind, lapply(split(hub_genes, hub_genes$module), head, 20))
+  rownames(hub_genes) <- NULL
+
+  list(
+    module_summary = module_summary,
+    gene_table = gene_table,
+    hub_genes = hub_genes,
+    MEs = MEs,
+    trait = trait,
+    power = chosen_power,
+    sft_table = sft_table,
+    control_group = result$control_group,
+    treatment_group = result$treatment_group
+  )
+}
+
+make_wgcna_plot <- function(wgcna_result) {
+  df <- wgcna_result$module_summary
+  df$module <- factor(df$module, levels = rev(df$module))
+  ggplot(df, aes(x = "Group trait", y = module, fill = trait_correlation)) +
+    geom_tile(color = "white", linewidth = 0.7) +
+    geom_text(aes(label = sprintf("r=%.2f\np=%.2g", trait_correlation, p_value)), size = 3.4) +
+    scale_fill_gradient2(low = "#2563eb", mid = "white", high = "#dc2626", limits = c(-1, 1)) +
+    labs(
+      x = paste0(wgcna_result$treatment_group, " = 1, ", wgcna_result$control_group, " = 0"),
+      y = "WGCNA module",
+      fill = "correlation"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(panel.grid = element_blank())
+}
+
+wgcna_interpretation <- function(wgcna_result) {
+  df <- wgcna_result$module_summary
+  df <- df[df$module != "grey", , drop = FALSE]
+  if (nrow(df) == 0) {
+    return("WGCNA 没有识别到非 grey 模块，当前数据的共表达模块结构较弱或参数过严。")
+  }
+  top <- df[order(df$p_value, -abs(df$trait_correlation)), ][1, ]
+  direction <- if (top$trait_correlation > 0) {
+    paste0("更偏向 ", wgcna_result$treatment_group, " 组")
+  } else {
+    paste0("更偏向 ", wgcna_result$control_group, " 组")
+  }
+  deg_bias <- if (top$up_genes > top$down_genes) {
+    paste0("该模块内上调基因更多，说明它更接近 ", wgcna_result$treatment_group, " 相关表达升高信号。")
+  } else if (top$down_genes > top$up_genes) {
+    paste0("该模块内下调基因更多，说明它更接近 ", wgcna_result$control_group, " 相关表达升高信号。")
+  } else {
+    "该模块内上调和下调差异基因数量接近，主要体现共表达结构而不是单一上下调方向。"
+  }
+  paste0(
+    "WGCNA 将样本分组编码为 ", wgcna_result$treatment_group, "=1、",
+    wgcna_result$control_group, "=0。当前最相关模块是 ",
+    top$module, "，模块-分组相关 r=", sprintf("%.2f", top$trait_correlation),
+    "，p=", signif(top$p_value, 3), "，", direction, "。", deg_bias,
+    " 需要注意，WGCNA 解释的是“成组共表达模块”偏向哪一类样本，不等同于单个基因的差异分析。"
+  )
+}
+
+read_ppi_table <- function(file = NULL, default_path = "string_interactions.tsv") {
+  if (!is.null(file)) {
+    df <- read_any_table(file)
+  } else if (file.exists(default_path)) {
+    df <- read.delim(default_path, check.names = FALSE, stringsAsFactors = FALSE)
+  } else {
+    return(NULL)
+  }
+  names(df) <- sub("^#", "", names(df))
+  if (!all(c("node1", "node2") %in% names(df))) {
+    stop("PPI 文件至少需要 node1 和 node2 两列。")
+  }
+  if (!"combined_score" %in% names(df)) {
+    df$combined_score <- 1
+  }
+  df$node1 <- trim_text(df$node1)
+  df$node2 <- trim_text(df$node2)
+  df$combined_score <- numeric_clean(df$combined_score)
+  df[!is.na(df$node1) & !is.na(df$node2) & nzchar(df$node1) & nzchar(df$node2), , drop = FALSE]
+}
+
+run_ppi_analysis <- function(result, ppi_table, score_cutoff = 0.7, max_genes = 1000) {
+  if (is.null(ppi_table) || nrow(ppi_table) == 0) {
+    stop("没有可用的 PPI 互作表。请上传 STRING 导出的 interaction 文件，或把 string_interactions.tsv 放在软件目录。")
+  }
+  deg <- result$deg
+  sig <- deg[deg$change != "stable" & !is.na(deg$symbol) & nzchar(deg$symbol), , drop = FALSE]
+  sig <- sig[order(sig[[result$p_column]], -abs(sig$logFC)), , drop = FALSE]
+  sig <- sig[!duplicated(sig$symbol), , drop = FALSE]
+  if (nrow(sig) > max_genes) {
+    sig <- sig[seq_len(max_genes), , drop = FALSE]
+  }
+  genes <- unique(sig$symbol)
+  if (length(genes) < 2) {
+    stop("显著差异基因少于 2 个，无法构建 PPI 网络。")
+  }
+
+  score <- ppi_table$combined_score
+  if (max(score, na.rm = TRUE) > 1) {
+    score <- score / 1000
+  }
+  edges <- ppi_table[ppi_table$node1 %in% genes & ppi_table$node2 %in% genes & score >= score_cutoff, , drop = FALSE]
+  edges$score <- score[ppi_table$node1 %in% genes & ppi_table$node2 %in% genes & score >= score_cutoff]
+  if (nrow(edges) == 0) {
+    stop("当前阈值下没有 PPI 边。请降低 combined_score 阈值或增加 PPI 基因数。")
+  }
+
+  vertices <- data.frame(name = unique(c(edges$node1, edges$node2)), stringsAsFactors = FALSE)
+  vertices$change <- sig$change[match(vertices$name, sig$symbol)]
+  vertices$logFC <- sig$logFC[match(vertices$name, sig$symbol)]
+  graph <- igraph::graph_from_data_frame(edges[, c("node1", "node2", "score")], directed = FALSE, vertices = vertices)
+  graph <- igraph::simplify(graph, remove.multiple = TRUE, remove.loops = TRUE, edge.attr.comb = "max")
+
+  centrality <- data.frame(
+    symbol = igraph::V(graph)$name,
+    degree = as.numeric(igraph::degree(graph)),
+    betweenness = as.numeric(igraph::betweenness(graph, normalized = TRUE)),
+    closeness = as.numeric(igraph::closeness(graph, normalized = TRUE)),
+    stringsAsFactors = FALSE
+  )
+  centrality$change <- igraph::V(graph)$change
+  centrality$logFC <- igraph::V(graph)$logFC
+  centrality <- centrality[order(-centrality$degree, -centrality$betweenness, -abs(centrality$logFC)), ]
+  rownames(centrality) <- NULL
+
+  communities <- tryCatch(igraph::cluster_louvain(graph), error = function(e) NULL)
+  if (!is.null(communities)) {
+    centrality$community <- igraph::membership(communities)[centrality$symbol]
+  } else {
+    centrality$community <- NA_integer_
+  }
+
+  list(
+    graph = graph,
+    hubs = centrality,
+    edges = edges,
+    score_cutoff = score_cutoff,
+    max_genes = max_genes,
+    control_group = result$control_group,
+    treatment_group = result$treatment_group
+  )
+}
+
+make_ppi_plot <- function(ppi_result, label_top_n = 15) {
+  graph <- ppi_result$graph
+  hubs <- ppi_result$hubs
+  top_labels <- head(hubs$symbol, label_top_n)
+  vertex_color <- ifelse(
+    igraph::V(graph)$change == "up", "#dc2626",
+    ifelse(igraph::V(graph)$change == "down", "#2563eb", "#9ca3af")
+  )
+  vertex_size <- 5 + 3 * log1p(igraph::degree(graph))
+  labels <- ifelse(igraph::V(graph)$name %in% top_labels, igraph::V(graph)$name, NA)
+  set.seed(2026)
+  plot(
+    graph,
+    layout = igraph::layout_with_fr(graph),
+    vertex.color = vertex_color,
+    vertex.size = vertex_size,
+    vertex.label = labels,
+    vertex.label.cex = 0.75,
+    vertex.label.color = "#111827",
+    edge.width = 1 + 2 * igraph::E(graph)$score,
+    edge.color = "#cbd5e1",
+    main = "PPI network"
+  )
+  legend(
+    "topleft",
+    legend = c("up", "down", "other"),
+    col = c("#dc2626", "#2563eb", "#9ca3af"),
+    pch = 19,
+    bty = "n"
+  )
+}
+
+ppi_interpretation <- function(ppi_result) {
+  hubs <- ppi_result$hubs
+  top <- head(hubs, 10)
+  up_n <- sum(hubs$change == "up", na.rm = TRUE)
+  down_n <- sum(hubs$change == "down", na.rm = TRUE)
+  hub_names <- paste(top$symbol, collapse = ", ")
+  bias <- if (up_n > down_n) {
+    paste0("网络节点以上调基因为主，更偏向 ", ppi_result$treatment_group, " 组相关的蛋白互作信号。")
+  } else if (down_n > up_n) {
+    paste0("网络节点以下调基因为主，更偏向 ", ppi_result$control_group, " 组相关的蛋白互作信号。")
+  } else {
+    "网络中上调和下调节点接近，说明该 PPI 网络可能同时包含两组方向的互作信号。"
+  }
+  paste0(
+    "PPI 网络包含 ", igraph::vcount(ppi_result$graph), " 个节点、",
+    igraph::ecount(ppi_result$graph), " 条边。", bias,
+    " 当前 degree/betweenness 排名前列的 hub genes 是：", hub_names,
+    "。PPI 解释的是差异基因编码蛋白之间的已知/预测互作关系，hub gene 更适合作为后续验证候选，而不是单独证明因果。"
+  )
+}
+
+run_gsea_analysis <- function(result, ontology = "BP", min_size = 10,
+                              max_size = 500, p_cutoff = 0.25) {
+  deg <- result$deg
+  ranked <- deg[!is.na(deg$symbol) & nzchar(deg$symbol) & is.finite(deg$logFC), , drop = FALSE]
+  ranked <- ranked[!duplicated(ranked$symbol), , drop = FALSE]
+  if (nrow(ranked) < 100) {
+    stop("GSEA 至少建议有 100 个可排序基因。")
+  }
+
+  mapping <- suppressMessages(clusterProfiler::bitr(
+    ranked$symbol,
+    fromType = "SYMBOL",
+    toType = "ENTREZID",
+    OrgDb = org.Hs.eg.db::org.Hs.eg.db
+  ))
+  ranked$ENTREZID <- mapping$ENTREZID[match(ranked$symbol, mapping$SYMBOL)]
+  ranked <- ranked[!is.na(ranked$ENTREZID), , drop = FALSE]
+  ranked <- ranked[order(abs(ranked$logFC), decreasing = TRUE), , drop = FALSE]
+  ranked <- ranked[!duplicated(ranked$ENTREZID), , drop = FALSE]
+  gene_list <- ranked$logFC
+  names(gene_list) <- ranked$ENTREZID
+  gene_list <- sort(gene_list, decreasing = TRUE)
+  if (length(gene_list) < 100) {
+    stop("SYMBOL 转 ENTREZID 后可用于 GSEA 的基因少于 100 个。请检查物种或注释。")
+  }
+
+  gsea <- suppressMessages(clusterProfiler::gseGO(
+    geneList = gene_list,
+    OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+    keyType = "ENTREZID",
+    ont = ontology,
+    minGSSize = min_size,
+    maxGSSize = max_size,
+    pvalueCutoff = 1,
+    pAdjustMethod = "BH",
+    verbose = FALSE
+  ))
+  gsea <- suppressMessages(clusterProfiler::setReadable(
+    gsea,
+    OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+    keyType = "ENTREZID"
+  ))
+  table <- as.data.frame(gsea)
+  if (nrow(table) > 0) {
+    table$bias <- ifelse(table$NES > 0, result$treatment_group, result$control_group)
+    table$direction <- ifelse(
+      table$NES > 0,
+      paste0("偏向 ", result$treatment_group),
+      paste0("偏向 ", result$control_group)
+    )
+    table <- table[order(table$p.adjust, -abs(table$NES)), , drop = FALSE]
+  }
+  list(
+    gsea = gsea,
+    table = table,
+    gene_list = gene_list,
+    ontology = ontology,
+    p_cutoff = p_cutoff,
+    control_group = result$control_group,
+    treatment_group = result$treatment_group
+  )
+}
+
+make_gsea_plot <- function(gsea_result, show_n = 15) {
+  table <- gsea_result$table
+  table <- table[is.finite(table$p.adjust) & table$p.adjust <= gsea_result$p_cutoff, , drop = FALSE]
+  if (nrow(table) == 0) {
+    table <- head(gsea_result$table, show_n)
+  } else {
+    table <- head(table, show_n)
+  }
+  validate(need(nrow(table) > 0, "当前 GSEA 没有可绘制的通路。"))
+  table$Description <- factor(table$Description, levels = rev(table$Description))
+  ggplot(table, aes(x = NES, y = Description, color = p.adjust, size = setSize)) +
+    geom_point(alpha = 0.9) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "#6b7280") +
+    scale_color_gradient(low = "#dc2626", high = "#2563eb", trans = "reverse") +
+    labs(
+      x = paste0("NES > 0: ", gsea_result$treatment_group, "; NES < 0: ", gsea_result$control_group),
+      y = NULL,
+      color = "padj",
+      size = "genes"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+}
+
+gsea_interpretation <- function(gsea_result) {
+  table <- gsea_result$table
+  if (nrow(table) == 0) {
+    return("GSEA 没有返回可解释的 GO 条目。建议检查基因 ID 是否为人类 SYMBOL，或改用自定义基因集。")
+  }
+  sig <- table[is.finite(table$p.adjust) & table$p.adjust <= gsea_result$p_cutoff, , drop = FALSE]
+  if (nrow(sig) == 0) {
+    top <- head(table, 3)
+    return(paste0(
+      "当前阈值 padj <= ", gsea_result$p_cutoff,
+      " 下没有显著 GSEA 条目。排名靠前的趋势项包括：",
+      paste(top$Description, collapse = "；"),
+      "。这说明通路层面信号可能存在但统计强度不足，建议作为探索性结果。"
+    ))
+  }
+  pos <- sig[sig$NES > 0, , drop = FALSE]
+  neg <- sig[sig$NES < 0, , drop = FALSE]
+  pos_txt <- if (nrow(pos) > 0) paste(head(pos$Description, 3), collapse = "；") else "无明显条目"
+  neg_txt <- if (nrow(neg) > 0) paste(head(neg$Description, 3), collapse = "；") else "无明显条目"
+  paste0(
+    "GSEA 使用全部基因按 logFC 排序，而不是只看过阈值 DEG。NES > 0 表示通路整体偏向 ",
+    gsea_result$treatment_group, "，NES < 0 表示偏向 ", gsea_result$control_group,
+    "。当前显著条目中，", gsea_result$treatment_group, " 方向主要包括：",
+    pos_txt, "；", gsea_result$control_group, " 方向主要包括：", neg_txt,
+    "。它的好处是能捕捉一批基因整体轻微但一致的变化，适合解释疾病/处理组的主要生物过程。"
+  )
+}
+
+final_analysis_recommendation <- function(result, wgcna_result = NULL,
+                                          ppi_result = NULL, gsea_result = NULL) {
+  change_counts <- table(result$deg$change)
+  up <- as.integer(change_counts["up"] %||% 0)
+  down <- as.integer(change_counts["down"] %||% 0)
+  n_samples <- ncol(result$mat)
+  base <- paste0(
+    "最终建议：这个样本最适合采用“DEG 差异分析 + GSEA 通路解释”为主线，",
+    "WGCNA 作为模块层面的辅助验证，PPI 用来筛选可后续实验验证的 hub genes。"
+  )
+  why <- paste0(
+    "原因是当前数据为两组比较，共 ", n_samples, " 个样本，DEG 已能给出清晰上下调基因（上调 ",
+    up, "，下调 ", down, "）。GSEA 不依赖硬阈值，能解释整套基因排序偏向的生物过程；",
+    "WGCNA 对样本量更敏感，适合看模块是否整体偏向疾病/处理组；PPI 则依赖 STRING 等外部互作库，适合作为候选核心基因排序。"
+  )
+  extra <- character()
+  if (!is.null(gsea_result)) {
+    extra <- c(extra, gsea_interpretation(gsea_result))
+  }
+  if (!is.null(wgcna_result)) {
+    extra <- c(extra, wgcna_interpretation(wgcna_result))
+  }
+  if (!is.null(ppi_result)) {
+    extra <- c(extra, ppi_interpretation(ppi_result))
+  }
+  paste(c(base, why, extra), collapse = "\n\n")
+}
+
 ui <- fluidPage(
   tags$head(
     tags$style(HTML("
@@ -486,6 +960,16 @@ ui <- fluidPage(
       .preview-section { margin-top: 18px; }
       .preview-section h4 { margin: 0 0 10px; line-height: 1.35; }
       .color-control { margin-top: 8px; }
+      .analysis-note {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-left: 4px solid #0f766e;
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin: 12px 0 16px;
+        line-height: 1.65;
+        white-space: pre-line;
+      }
       .btn-primary { background-color: #0f766e; border-color: #0f766e; }
       .btn-primary:hover, .btn-primary:focus {
         background-color: #115e59; border-color: #115e59;
@@ -573,6 +1057,30 @@ ui <- fluidPage(
         colourpicker::colourInput("heatmap_mid_color", "热图中间颜色", "#ffffff"),
         colourpicker::colourInput("heatmap_high_color", "热图高值颜色", "#dc2626")
       ),
+      tags$hr(),
+      h4("4. WGCNA / PPI / GSEA"),
+      numericInput("wgcna_top_n", "WGCNA 高变基因数", value = 5000, min = 500, max = 20000, step = 500),
+      numericInput("wgcna_soft_power", "WGCNA soft power（0=自动）", value = 0, min = 0, max = 30, step = 1),
+      numericInput("wgcna_min_module_size", "WGCNA 最小模块基因数", value = 30, min = 10, max = 200, step = 5),
+      numericInput("wgcna_merge_cut_height", "WGCNA 模块合并阈值", value = 0.25, min = 0.05, max = 0.5, step = 0.05),
+      actionButton("run_wgcna", "运行 WGCNA", class = "btn-default"),
+      br(), br(),
+      fileInput(
+        "ppi_file",
+        "PPI 互作表（可选，默认读取 string_interactions.tsv）",
+        accept = c(".tsv", ".txt", ".csv", ".xlsx", ".xls")
+      ),
+      numericInput("ppi_score_cutoff", "PPI combined_score 阈值", value = 0.7, min = 0, max = 1, step = 0.05),
+      numericInput("ppi_max_genes", "PPI 最多差异基因数", value = 1000, min = 20, max = 2000, step = 20),
+      numericInput("ppi_label_top_n", "PPI 标注 hub 数", value = 15, min = 0, max = 100, step = 1),
+      actionButton("run_ppi", "运行 PPI", class = "btn-default"),
+      br(), br(),
+      selectInput("gsea_ontology", "GSEA GO 类型", choices = c("BP", "MF", "CC"), selected = "BP"),
+      numericInput("gsea_min_size", "GSEA 最小基因集", value = 10, min = 5, max = 100, step = 5),
+      numericInput("gsea_max_size", "GSEA 最大基因集", value = 500, min = 100, max = 2000, step = 50),
+      numericInput("gsea_p_cutoff", "GSEA padj 阈值", value = 0.25, min = 0, max = 1, step = 0.05),
+      numericInput("gsea_show_n", "GSEA 图显示条目数", value = 15, min = 5, max = 50, step = 5),
+      actionButton("run_gsea", "运行 GSEA", class = "btn-default"),
       fileInput(
         "annotation_file",
         "注释表（可选：第1列ID，第2列symbol）",
@@ -606,6 +1114,7 @@ ui <- fluidPage(
         ),
         tabPanel(
           "分析结果",
+          uiOutput("final_recommendation"),
           uiOutput("summary_cards"),
           downloadButton("download_all", "下载完整差异表"),
           downloadButton("download_sig", "下载显著差异基因"),
@@ -629,6 +1138,37 @@ ui <- fluidPage(
           br(),
           downloadButton("download_pca", "下载 PCA PNG"),
           plotOutput("pca_plot", height = "620px")
+        ),
+        tabPanel(
+          "WGCNA",
+          br(),
+          uiOutput("wgcna_interpretation"),
+          downloadButton("download_wgcna_modules", "下载 WGCNA 模块表"),
+          downloadButton("download_wgcna_hubs", "下载 WGCNA hub genes"),
+          plotOutput("wgcna_plot", height = "620px"),
+          h4("模块-分组相关性"),
+          DT::DTOutput("wgcna_module_table"),
+          h4("模块 hub genes"),
+          DT::DTOutput("wgcna_hub_table")
+        ),
+        tabPanel(
+          "PPI",
+          br(),
+          uiOutput("ppi_interpretation"),
+          downloadButton("download_ppi_hubs", "下载 PPI hub genes"),
+          downloadButton("download_ppi_edges", "下载 PPI edges"),
+          plotOutput("ppi_plot", height = "720px"),
+          h4("PPI hub genes"),
+          DT::DTOutput("ppi_hub_table")
+        ),
+        tabPanel(
+          "GSEA",
+          br(),
+          uiOutput("gsea_interpretation"),
+          downloadButton("download_gsea_table", "下载 GSEA 结果表"),
+          plotOutput("gsea_plot", height = "720px"),
+          h4("GSEA 结果"),
+          DT::DTOutput("gsea_table")
         )
       )
     )
@@ -894,6 +1434,61 @@ server <- function(input, output, session) {
     ))(100)
   })
 
+  wgcna_result <- eventReactive(input$run_wgcna, {
+    result <- analysis_result()
+    withProgress(message = "正在运行 WGCNA", value = 0, {
+      incProgress(0.2, detail = "筛选高变基因")
+      out <- run_wgcna_analysis(
+        result,
+        top_n = input$wgcna_top_n,
+        soft_power = input$wgcna_soft_power,
+        min_module_size = input$wgcna_min_module_size,
+        merge_cut_height = input$wgcna_merge_cut_height
+      )
+      incProgress(0.9, detail = "生成模块解释")
+      out
+    })
+  })
+
+  ppi_result <- eventReactive(input$run_ppi, {
+    result <- analysis_result()
+    withProgress(message = "正在运行 PPI", value = 0, {
+      incProgress(0.3, detail = "读取互作表")
+      ppi_table <- read_ppi_table(input$ppi_file)
+      incProgress(0.6, detail = "构建网络")
+      run_ppi_analysis(
+        result,
+        ppi_table,
+        score_cutoff = input$ppi_score_cutoff,
+        max_genes = input$ppi_max_genes
+      )
+    })
+  })
+
+  gsea_result <- eventReactive(input$run_gsea, {
+    result <- analysis_result()
+    withProgress(message = "正在运行 GSEA", value = 0, {
+      incProgress(0.3, detail = "基因 ID 转换")
+      out <- run_gsea_analysis(
+        result,
+        ontology = input$gsea_ontology,
+        min_size = input$gsea_min_size,
+        max_size = input$gsea_max_size,
+        p_cutoff = input$gsea_p_cutoff
+      )
+      incProgress(0.9, detail = "生成 GSEA 解释")
+      out
+    })
+  })
+
+  output$final_recommendation <- renderUI({
+    result <- analysis_result()
+    w <- tryCatch(wgcna_result(), error = function(e) NULL)
+    p <- tryCatch(ppi_result(), error = function(e) NULL)
+    g <- tryCatch(gsea_result(), error = function(e) NULL)
+    div(class = "analysis-note", final_analysis_recommendation(result, w, p, g))
+  })
+
   output$summary_cards <- renderUI({
     result <- analysis_result()
     change_counts <- table(result$deg$change)
@@ -957,6 +1552,66 @@ server <- function(input, output, session) {
       color = heatmap_colors(),
       breaks = seq(-3, 3, length.out = 101),
       border_color = NA
+    )
+  })
+
+  output$wgcna_interpretation <- renderUI({
+    div(class = "analysis-note", wgcna_interpretation(wgcna_result()))
+  })
+
+  output$wgcna_plot <- renderPlot({
+    make_wgcna_plot(wgcna_result())
+  })
+
+  output$wgcna_module_table <- DT::renderDT({
+    DT::datatable(
+      wgcna_result()$module_summary,
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 15, scrollX = TRUE)
+    )
+  })
+
+  output$wgcna_hub_table <- DT::renderDT({
+    DT::datatable(
+      wgcna_result()$hub_genes,
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 20, scrollX = TRUE)
+    )
+  })
+
+  output$ppi_interpretation <- renderUI({
+    div(class = "analysis-note", ppi_interpretation(ppi_result()))
+  })
+
+  output$ppi_plot <- renderPlot({
+    make_ppi_plot(ppi_result(), label_top_n = input$ppi_label_top_n)
+  })
+
+  output$ppi_hub_table <- DT::renderDT({
+    DT::datatable(
+      ppi_result()$hubs,
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 20, scrollX = TRUE)
+    )
+  })
+
+  output$gsea_interpretation <- renderUI({
+    div(class = "analysis-note", gsea_interpretation(gsea_result()))
+  })
+
+  output$gsea_plot <- renderPlot({
+    make_gsea_plot(gsea_result(), show_n = input$gsea_show_n)
+  })
+
+  output$gsea_table <- DT::renderDT({
+    DT::datatable(
+      gsea_result()$table,
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 20, scrollX = TRUE)
     )
   })
 
@@ -1033,6 +1688,41 @@ server <- function(input, output, session) {
         breaks = seq(-3, 3, length.out = 101),
         border_color = NA
       )
+    }
+  )
+
+  output$download_wgcna_modules <- downloadHandler(
+    filename = function() paste0("WGCNA_modules_", Sys.Date(), ".csv"),
+    content = function(file) {
+      write.csv(wgcna_result()$module_summary, file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$download_wgcna_hubs <- downloadHandler(
+    filename = function() paste0("WGCNA_hub_genes_", Sys.Date(), ".csv"),
+    content = function(file) {
+      write.csv(wgcna_result()$hub_genes, file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$download_ppi_hubs <- downloadHandler(
+    filename = function() paste0("PPI_hub_genes_", Sys.Date(), ".csv"),
+    content = function(file) {
+      write.csv(ppi_result()$hubs, file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$download_ppi_edges <- downloadHandler(
+    filename = function() paste0("PPI_edges_", Sys.Date(), ".csv"),
+    content = function(file) {
+      write.csv(ppi_result()$edges, file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$download_gsea_table <- downloadHandler(
+    filename = function() paste0("GSEA_GO_", Sys.Date(), ".csv"),
+    content = function(file) {
+      write.csv(gsea_result()$table, file, row.names = FALSE, fileEncoding = "UTF-8")
     }
   )
 }

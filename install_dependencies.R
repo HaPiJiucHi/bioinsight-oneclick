@@ -3,9 +3,9 @@ options(BioC_mirror = "https://mirrors.westlake.edu.cn/bioconductor")
 
 cran_packages <- c(
   "shiny", "ggplot2", "readr", "readxl", "DT", "pheatmap", "matrixStats",
-  "ggrepel", "colourpicker"
+  "ggrepel", "colourpicker", "igraph", "WGCNA"
 )
-bioc_packages <- c("limma")
+bioc_packages <- c("limma", "clusterProfiler", "org.Hs.eg.db", "enrichplot")
 
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager", ask = FALSE, update = FALSE)
