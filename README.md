@@ -6,11 +6,11 @@
 
 推荐下载 Release 里的压缩包：
 
-- `差异分析软件.zip`
+- [DifferentialAnalysisSoftware-v1.0.0.zip](https://github.com/HaPiJiucHi/differential-analysis-software/releases/download/v1.0.0/DifferentialAnalysisSoftware-v1.0.0.zip)
 
 正式下载文件会放在 GitHub Release 附件中：
 
-- `差异分析软件.zip`
+- `DifferentialAnalysisSoftware-v1.0.0.zip`
 
 ## 快速开始
 
