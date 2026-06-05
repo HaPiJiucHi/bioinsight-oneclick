@@ -1,5 +1,14 @@
 # Release Notes
 
+## v1.1.2
+
+### GitHub 首页更新
+
+- 将 README 改为教程型首页，突出软件解决的问题、安装方式、分析流程和结果展示。
+- 增加功能截图、结果展示图和 Mermaid 流程图。
+- 增加 `scripts/create_readme_assets.R`，可重新生成 README 展示图。
+- 增加 `docs/DOUYIN_VIDEO_SCRIPT.md`，包含 60 秒抖音讲解脚本、标题、封面文案和评论区引导。
+
 ## v1.1.1
 
 ### 界面更新

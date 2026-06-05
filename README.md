@@ -1,52 +1,81 @@
 # 差异分析一键软件
 
-一个面向 Windows 用户的本地差异分析桌面软件。双击 `差异分析软件.exe` 后，软件会启动本地 Shiny 分析界面，支持导入表达矩阵和分组表，一键完成两组差异分析，并导出差异表、显著差异基因、火山图、热图、PCA、WGCNA、PPI 和 GSEA。
+> 面向生信入门、课题组教学和非编程用户的 Windows 本地差异分析工具：导入表达矩阵和分组表，一键得到 DEG、火山图、热图、PCA、GSEA、WGCNA 和 PPI。
 
-## 下载
+[![Windows](https://img.shields.io/badge/Windows-one--click-2563eb)](#一键安装)
+[![R/Shiny](https://img.shields.io/badge/R%20Shiny-local-0f766e)](#本地开发)
+[![Release](https://img.shields.io/badge/Download-v1.1.1-dc2626)](https://github.com/HaPiJiucHi/differential-analysis-software/releases/tag/v1.1.1)
+[![License](https://img.shields.io/badge/License-MIT-111827)](LICENSE)
 
-推荐下载 GitHub Release 里的压缩包：
+![软件界面](docs/assets/software-interface.png)
 
-- [DifferentialAnalysisSoftware-v1.1.1.zip](https://github.com/HaPiJiucHi/differential-analysis-software/releases/download/v1.1.1/DifferentialAnalysisSoftware-v1.1.1.zip)
+## 它解决什么问题？
 
-## 快速开始
+很多表达谱数据分析卡在第一步：不会写 R、分组表容易错、画图参数分散、结果不知道怎么解释。这个软件把常用差异分析流程做成图形界面：
 
-1. 下载并解压 `DifferentialAnalysisSoftware-v1.1.1.zip`。
-2. 双击 `差异分析软件.exe`。
-3. 如果提示缺少依赖，点击启动器窗口里的“检查依赖”。
-4. 在浏览器界面导入表达矩阵和分组表。
-5. 选择对照组、处理组和分析参数，点击“一键开始差异分析”。
+- **一键导入**：表达矩阵、分组表、注释表。
+- **一键分析**：`limma` 差异分析，自动生成 DEG 表。
+- **一键出图**：火山图、热图、PCA。
+- **机制解释**：GSEA 看通路整体偏向，WGCNA 看共表达模块，PPI 找候选 hub genes。
+- **适合教学**：界面和结果都能截图讲解，适合课程、组会、短视频演示。
 
-如果电脑没有 R，启动器可以把 R 安装到软件同目录下的 `R` 文件夹，尽量减少对系统环境的依赖。
+## 一键安装
 
-## 主要功能
+1. 打开 [Release v1.1.1](https://github.com/HaPiJiucHi/differential-analysis-software/releases/tag/v1.1.1)。
+2. 下载 `DifferentialAnalysisSoftware-v1.1.1.zip`。
+3. 解压后双击 `差异分析软件.exe`。
+4. 第一次运行如果提示缺少依赖，点击“检查依赖”。
 
-- 支持 `.csv`、`.tsv`、`.txt`、`.xlsx`、`.xls` 表达矩阵导入。
-- 支持分组文件、样本名关键词、手动粘贴三种分组方式。
-- 使用 `limma` 进行两组差异分析。
-- 输出完整差异表和显著差异基因表。
-- 火山图支持颜色调整和 Top 显著基因名称标注。
-- 热图支持行聚类、列聚类开关和颜色调整。
-- PCA 图用于检查样本分组趋势，支持显示分组椭圆和分组中心点。
-- 各分析参数放在对应页签顶部，左侧只保留导入、注释和分组。
-- WGCNA 用于识别与分组相关的共表达模块，并输出模块 hub genes。
-- PPI 用于基于 STRING 互作表构建差异基因互作网络，并输出 hub genes。
-- GSEA 用于基于全部基因排序解释 GO 通路整体偏向。
+如果电脑没有 R，启动器会尝试把 R 安装到软件同目录下的 `R` 文件夹，尽量减少系统环境配置。
 
-## 示例数据建议
+## 分析流程
 
-内置示例数据是 20 个样本，Normal 10 个、Disease 10 个。推荐分析主线是：
-
-```text
-DEG 差异分析 + GSEA 通路解释为主，WGCNA 做模块层面辅助验证，PPI 做候选 hub gene 筛选。
+```mermaid
+flowchart LR
+  A["导入表达矩阵"] --> B["设置分组"]
+  B --> C["limma 差异分析"]
+  C --> D["DEG 结果表"]
+  C --> E["火山图 / 热图 / PCA"]
+  C --> F["GSEA 通路解释"]
+  C --> G["WGCNA 共表达模块"]
+  C --> H["PPI hub genes"]
+  F --> I["形成生物学解释"]
+  G --> I
+  H --> I
 ```
 
-原因：
+## 结果展示
 
-- 示例数据显著差异基因数量充足，验证结果中上调 1624 个、下调 1179 个。
-- GSEA 不依赖硬阈值，能解释整套基因排序的通路偏向，适合放在 DEG 之后解释机制。
-- 示例 GSEA 靠前结果集中在有丝分裂姐妹染色单体分离、染色体分离、核染色体分离等细胞周期/染色体分离相关过程，NES 为负，提示这些过程整体偏向 Normal 组一侧。
-- WGCNA 显示 turquoise 模块偏向 Disease、blue 模块偏向 Normal，说明样本存在清晰共表达模块结构；但 WGCNA 对样本量敏感，应作为辅助证据。
-- PPI 在高置信阈值下给出 TOP2A、PRC1、EZH2 等 hub 候选，适合后续实验验证优先级排序。
+| 火山图：显著基因标注 | 热图：差异基因表达模式 |
+|---|---|
+| ![火山图](docs/assets/result-volcano.png) | ![热图](docs/assets/result-heatmap.png) |
+
+| PCA：椭圆和中心点 | GSEA：通路整体偏向 |
+|---|---|
+| ![PCA](docs/assets/result-pca.png) | ![GSEA](docs/assets/result-gsea.png) |
+
+| WGCNA：模块-分组相关 | PPI：候选 hub genes |
+|---|---|
+| ![WGCNA](docs/assets/result-wgcna.png) | ![PPI](docs/assets/result-ppi.png) |
+
+## 示例数据能讲出什么？
+
+内置示例数据包含 20 个样本：Normal 10 个、Disease 10 个。验证结果显示：
+
+- 上调基因：1624 个。
+- 下调基因：1179 个。
+- GSEA 靠前结果集中在姐妹染色单体分离、染色体分离、核染色体分离等细胞周期相关过程。
+- WGCNA 中 turquoise 模块偏向 Disease，blue 模块偏向 Normal。
+- PPI 中 TOP2A、PRC1、EZH2 等可作为后续验证候选。
+
+推荐解读主线：
+
+```text
+DEG 确定显著变化基因
+GSEA 解释整体通路偏向
+WGCNA 辅助证明模块化共表达结构
+PPI 排序后续实验候选 hub genes
+```
 
 ## 输入格式
 
@@ -76,31 +105,29 @@ probe_id,symbol
 1053_at,RFC2
 ```
 
-## PPI 输入
+## 功能清单
 
-软件默认会读取同目录下的 `string_interactions.tsv`。如果需要换成自己的物种或自己的基因集，可以从 STRING 导出 interaction 文件后上传。建议至少包含 `node1`、`node2`、`combined_score` 三列。
+- 支持 `.csv`、`.tsv`、`.txt`、`.xlsx`、`.xls`。
+- 支持分组文件、样本名关键词、手动粘贴三种分组方式。
+- 差异分析参数放在“分析结果”页签顶部。
+- 火山图支持颜色调整和 Top 显著基因名称标注。
+- 热图支持行聚类、列聚类开关和颜色调整。
+- PCA 支持分组椭圆和分组中心点。
+- GSEA 支持 GO BP、MF、CC，并在界面下方解释为什么使用 GSEA。
+- WGCNA 输出模块相关性和模块 hub genes。
+- PPI 默认读取同目录 `string_interactions.tsv`，也可上传自己的 STRING interaction 文件。
 
-## 仓库内容
+## 适合怎么做教学视频？
 
-```text
-.
-├── app.R                         # Shiny 主程序
-├── DifferentialAppLauncher.cs    # Windows exe 启动器源码
-├── install_dependencies.R        # R 依赖安装脚本
-├── string_interactions.tsv       # 示例 PPI 互作表
-├── test_app.R                    # 示例数据基础自测脚本
-├── dist/                         # 本地打包输出目录，zip 通过 Release 发布
-├── docs/                         # 使用文档
-├── scripts/publish_to_github.ps1 # 发布脚本
-└── .github/ISSUE_TEMPLATE/       # GitHub issue 模板
-```
+推荐 60 秒结构：
 
-## 文档
+1. **开头 3 秒**：不用写代码，表达矩阵导入后直接出差异分析图。
+2. **10 秒展示导入**：表达矩阵、分组表、注释表。
+3. **15 秒展示结果**：火山图、热图、PCA。
+4. **20 秒讲机制**：GSEA 看通路，WGCNA 看模块，PPI 找 hub gene。
+5. **结尾引导**：GitHub 免费下载，Release 里有 zip，Star 后持续更新。
 
-- [安装说明](docs/INSTALL.md)
-- [使用说明](docs/USAGE.md)
-- [常见问题](docs/FAQ.md)
-- [版本发布说明](RELEASE_NOTES.md)
+详细脚本见：[抖音视频脚本](docs/DOUYIN_VIDEO_SCRIPT.md)。
 
 ## 本地开发
 
@@ -116,11 +143,26 @@ probe_id,symbol
 & "C:\Program Files\R\R-4.5.3\bin\Rscript.exe" .\test_app.R
 ```
 
+生成 README 展示图：
+
+```powershell
+cd scripts
+& "C:\Program Files\R\R-4.5.3\bin\Rscript.exe" .\create_readme_assets.R
+```
+
 直接启动 Shiny：
 
 ```powershell
 & "C:\Program Files\R\R-4.5.3\bin\Rscript.exe" -e "shiny::runApp('.', launch.browser = TRUE, host = '127.0.0.1', port = 3838)"
 ```
+
+## 文档
+
+- [安装说明](docs/INSTALL.md)
+- [使用说明](docs/USAGE.md)
+- [常见问题](docs/FAQ.md)
+- [抖音视频脚本](docs/DOUYIN_VIDEO_SCRIPT.md)
+- [版本发布说明](RELEASE_NOTES.md)
 
 ## 许可证
 
