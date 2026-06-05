@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal
 
 set "APP_DIR=%~dp0"
