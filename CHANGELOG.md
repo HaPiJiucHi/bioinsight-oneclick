@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.2.0
+
+- 软件正式更名为 **BioInsight 一键生信分析平台**，突出 DEG、GSEA、WGCNA、PPI 等完整生信分析能力。
+- 新增原创蜡笔手绘风 BioInsight 图标，并嵌入 Windows 启动器 exe。
+- 发行包重命名为 `BioInsight-OneClick-Bioinformatics-v1.2.0.zip`。
+- GitHub 仓库更名为 `bioinsight-oneclick`，README 下载入口同步更新。
+
 ## v1.1.2
 
 - 重做 GitHub 首页为教程型项目风格。
@@ -24,7 +31,7 @@
 
 ## v1.0.0
 
-- 发布 Windows 差异分析一键软件。
+- 发布 Windows 桌面启动器和本地 Shiny 分析界面。
 - 增加 R 自动检测和本地安装逻辑。
 - 增加颜色调整、火山图标签、热图聚类选项。
 - 增加 GitHub 发布文档和 issue 模板。

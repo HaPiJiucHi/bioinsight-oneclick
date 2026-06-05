@@ -21,4 +21,6 @@
 
 ## 打包
 
-重新编译启动器后，将需要发布的文件放入 `dist/差异分析软件.zip`。
+重新编译启动器后，将需要发布的文件放入 `dist/BioInsight-OneClick-Bioinformatics-v1.2.0.zip`。
+
+

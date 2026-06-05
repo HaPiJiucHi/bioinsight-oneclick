@@ -34,7 +34,7 @@
 
 ### 13-25 秒：基础结果
 
-画面：点击“一键开始差异分析”，切到火山图、热图、PCA。
+画面：点击“一键开始分析”，切到火山图、热图、PCA。
 
 旁白：
 
@@ -87,7 +87,7 @@ PPI 筛选 hub genes
 屏幕字幕：
 
 ```text
-GitHub 搜：differential-analysis-software
+GitHub 搜：bioinsight-oneclick
 Release 下载 zip
 ```
 
@@ -120,3 +120,5 @@ Release 下载 zip
 - 鼠标操作尽量慢一点，重点停留在页签切换和结果图。
 - 每个图只讲一句用途，不要把统计原理讲太长。
 - 结尾一定展示 GitHub Release 下载位置。
+
+

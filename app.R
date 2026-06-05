@@ -1032,7 +1032,7 @@ ui <- fluidPage(
       }
     "))
   ),
-  div(class = "app-title", titlePanel("差异分析一键软件")),
+  div(class = "app-title", titlePanel("BioInsight 一键生信分析平台")),
   sidebarLayout(
     sidebarPanel(
       width = 3,
@@ -1134,7 +1134,7 @@ ui <- fluidPage(
             ),
             div(
               class = "control-actions",
-              actionButton("run_analysis", "一键开始差异分析", class = "btn-primary")
+              actionButton("run_analysis", "一键开始分析", class = "btn-primary")
             )
           ),
           uiOutput("final_recommendation"),

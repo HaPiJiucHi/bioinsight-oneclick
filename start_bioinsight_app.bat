@@ -28,6 +28,8 @@ if not defined R_SCRIPT (
   exit /b 1
 )
 
-echo Starting differential analysis app...
+echo Starting BioInsight one-click bioinformatics platform...
 "%R_SCRIPT%" -e "shiny::runApp('%APP_DIR:\=/%', launch.browser = TRUE, host = '127.0.0.1', port = 3838)"
 pause
+
+

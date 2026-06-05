@@ -1,7 +1,7 @@
 param(
-  [string]$RepoName = "differential-analysis-software",
+  [string]$RepoName = "bioinsight-oneclick",
   [string]$Visibility = "public",
-  [string]$Version = "v1.0.0"
+  [string]$Version = "v1.2.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,8 +28,9 @@ git config user.name $login
 git config user.email "$login@users.noreply.github.com"
 
 git remote remove origin 2>$null
-& $gh.Source repo create "$login/$RepoName" "--$Visibility" --source . --remote origin --description "Windows desktop app for differential expression analysis with Shiny and limma." --push
+& $gh.Source repo create "$login/$RepoName" "--$Visibility" --source . --remote origin --description "Windows desktop bioinformatics analysis platform for DEG, GSEA, WGCNA, PPI and Shiny visual reports." --push
 
-& $gh.Source release create $Version "dist/差异分析软件.zip" --title "$Version" --notes-file RELEASE_NOTES.md
+& $gh.Source release create $Version "dist/BioInsight-OneClick-Bioinformatics-v1.2.0.zip" --title "$Version" --notes-file RELEASE_NOTES.md
 
 Write-Host "Published: https://github.com/$login/$RepoName"
+

@@ -1,5 +1,15 @@
 # Release Notes
 
+## v1.2.0
+
+### 品牌与发布包更新
+
+- 软件更名为 **BioInsight 一键生信分析平台**，不再只强调差异分析，突出 DEG、GSEA、WGCNA、PPI 的完整工作流。
+- 新增原创蜡笔手绘风应用图标，并嵌入 Windows `.exe`。
+- Windows 启动器文件名更新为 `BioInsight 一键生信分析平台.exe`。
+- 发布压缩包更新为 `BioInsight-OneClick-Bioinformatics-v1.2.0.zip`。
+- GitHub 首页、安装说明和抖音视频脚本同步使用新名称。
+
 ## v1.1.2
 
 ### GitHub 首页更新
@@ -52,3 +62,5 @@
 - 火山图和热图颜色调整。
 - 热图行聚类和列聚类开关。
 - 缺少 R 时可通过“检查依赖”下载并安装到软件同目录。
+
+

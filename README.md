@@ -1,29 +1,31 @@
-# 差异分析一键软件
+# BioInsight 一键生信分析平台
 
-> 面向生信入门、课题组教学和非编程用户的 Windows 本地差异分析工具：导入表达矩阵和分组表，一键得到 DEG、火山图、热图、PCA、GSEA、WGCNA 和 PPI。
+<img src="docs/assets/app-icon.png" width="96" alt="BioInsight icon">
+
+> 面向生信入门、课题组教学和非编程用户的 Windows 本地生信分析平台：导入表达矩阵和分组表，一键得到 DEG、火山图、热图、PCA、GSEA、WGCNA 和 PPI。
 
 [![Windows](https://img.shields.io/badge/Windows-one--click-2563eb)](#一键安装)
 [![R/Shiny](https://img.shields.io/badge/R%20Shiny-local-0f766e)](#本地开发)
-[![Release](https://img.shields.io/badge/Download-v1.1.1-dc2626)](https://github.com/HaPiJiucHi/differential-analysis-software/releases/tag/v1.1.1)
+[![Release](https://img.shields.io/badge/Download-v1.2.0-dc2626)](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.2.0)
 [![License](https://img.shields.io/badge/License-MIT-111827)](LICENSE)
 
 ![软件界面](docs/assets/software-interface.png)
 
 ## 它解决什么问题？
 
-很多表达谱数据分析卡在第一步：不会写 R、分组表容易错、画图参数分散、结果不知道怎么解释。这个软件把常用差异分析流程做成图形界面：
+很多表达谱分析卡在第一步：不会写 R、分组表容易错、画图参数分散、结果不知道怎么解释。BioInsight 把常用流程做成图形界面：
 
 - **一键导入**：表达矩阵、分组表、注释表。
-- **一键分析**：`limma` 差异分析，自动生成 DEG 表。
+- **一键分析**：`limma` DEG 分析，自动生成差异表。
 - **一键出图**：火山图、热图、PCA。
 - **机制解释**：GSEA 看通路整体偏向，WGCNA 看共表达模块，PPI 找候选 hub genes。
-- **适合教学**：界面和结果都能截图讲解，适合课程、组会、短视频演示。
+- **适合教学**：界面、参数和结果都能截图讲解，适合课程、组会和短视频演示。
 
 ## 一键安装
 
-1. 打开 [Release v1.1.1](https://github.com/HaPiJiucHi/differential-analysis-software/releases/tag/v1.1.1)。
-2. 下载 `DifferentialAnalysisSoftware-v1.1.1.zip`。
-3. 解压后双击 `差异分析软件.exe`。
+1. 打开 [Release v1.2.0](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.2.0)。
+2. 下载 `BioInsight-OneClick-Bioinformatics-v1.2.0.zip`。
+3. 解压后双击 `BioInsight 一键生信分析平台.exe`。
 4. 第一次运行如果提示缺少依赖，点击“检查依赖”。
 
 如果电脑没有 R，启动器会尝试把 R 安装到软件同目录下的 `R` 文件夹，尽量减少系统环境配置。
@@ -33,8 +35,8 @@
 ```mermaid
 flowchart LR
   A["导入表达矩阵"] --> B["设置分组"]
-  B --> C["limma 差异分析"]
-  C --> D["DEG 结果表"]
+  B --> C["limma DEG 分析"]
+  C --> D["差异结果表"]
   C --> E["火山图 / 热图 / PCA"]
   C --> F["GSEA 通路解释"]
   C --> G["WGCNA 共表达模块"]
@@ -99,17 +101,11 @@ Sample_4,Treatment
 
 注释表可选：第一列为表达矩阵里的 ID，第二列为基因 symbol。
 
-```csv
-probe_id,symbol
-1007_s_at,DDR1
-1053_at,RFC2
-```
-
 ## 功能清单
 
 - 支持 `.csv`、`.tsv`、`.txt`、`.xlsx`、`.xls`。
 - 支持分组文件、样本名关键词、手动粘贴三种分组方式。
-- 差异分析参数放在“分析结果”页签顶部。
+- DEG 参数放在“分析结果”页签顶部。
 - 火山图支持颜色调整和 Top 显著基因名称标注。
 - 热图支持行聚类、列聚类开关和颜色调整。
 - PCA 支持分组椭圆和分组中心点。
@@ -121,7 +117,7 @@ probe_id,symbol
 
 推荐 60 秒结构：
 
-1. **开头 3 秒**：不用写代码，表达矩阵导入后直接出差异分析图。
+1. **开头 3 秒**：不用写代码，表达矩阵导入后直接出图。
 2. **10 秒展示导入**：表达矩阵、分组表、注释表。
 3. **15 秒展示结果**：火山图、热图、PCA。
 4. **20 秒讲机制**：GSEA 看通路，WGCNA 看模块，PPI 找 hub gene。
@@ -164,6 +160,7 @@ cd scripts
 - [抖音视频脚本](docs/DOUYIN_VIDEO_SCRIPT.md)
 - [版本发布说明](RELEASE_NOTES.md)
 
-## 许可证
+## 许可
 
 本项目使用 MIT License。见 [LICENSE](LICENSE)。
+

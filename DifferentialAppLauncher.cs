@@ -7,7 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-namespace DifferentialAnalysisLauncher
+namespace BioInsightLauncher
 {
     internal static class Program
     {
@@ -36,7 +36,8 @@ namespace DifferentialAnalysisLauncher
 
         public LauncherForm()
         {
-            Text = "差异分析软件";
+            Text = "BioInsight 一键生信分析平台";
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(720, 460);
             MinimumSize = new Size(640, 390);
@@ -45,7 +46,7 @@ namespace DifferentialAnalysisLauncher
             var title = new Label
             {
                 AutoSize = false,
-                Text = "差异分析一键软件",
+                Text = "BioInsight 一键生信分析平台",
                 Font = new Font("Microsoft YaHei UI", 18F, FontStyle.Bold),
                 Location = new Point(22, 18),
                 Size = new Size(520, 42)
@@ -61,7 +62,7 @@ namespace DifferentialAnalysisLauncher
 
             startButton = new Button
             {
-                Text = "启动软件",
+                Text = "启动平台",
                 Location = new Point(24, 108),
                 Size = new Size(124, 36)
             };
@@ -129,13 +130,13 @@ namespace DifferentialAnalysisLauncher
             {
                 if (!File.Exists(Path.Combine(appDirectory, "app.R")))
                 {
-                    throw new FileNotFoundException("找不到 app.R，请把 exe 放在 pipeline 软件目录中运行。");
+                    throw new FileNotFoundException("找不到 app.R，请把 exe 放在 BioInsight 软件目录中运行。");
                 }
 
                 rscriptPath = FindRscript();
                 if (rscriptPath == null)
                 {
-                    throw new FileNotFoundException("找不到 Rscript.exe。请点击“检查依赖”，软件会下载 R 并安装到当前软件目录。");
+                    throw new FileNotFoundException("找不到 Rscript.exe。请点击“检查依赖”，平台会下载 R 并安装到当前软件目录。");
                 }
 
                 port = await FindFreePortAsync(3838, 3858);
