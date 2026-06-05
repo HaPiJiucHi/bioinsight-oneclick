@@ -6,11 +6,11 @@
 
 推荐下载 GitHub Release 里的压缩包：
 
-- [DifferentialAnalysisSoftware-v1.1.0.zip](https://github.com/HaPiJiucHi/differential-analysis-software/releases/download/v1.1.0/DifferentialAnalysisSoftware-v1.1.0.zip)
+- [DifferentialAnalysisSoftware-v1.1.1.zip](https://github.com/HaPiJiucHi/differential-analysis-software/releases/download/v1.1.1/DifferentialAnalysisSoftware-v1.1.1.zip)
 
 ## 快速开始
 
-1. 下载并解压 `DifferentialAnalysisSoftware-v1.1.0.zip`。
+1. 下载并解压 `DifferentialAnalysisSoftware-v1.1.1.zip`。
 2. 双击 `差异分析软件.exe`。
 3. 如果提示缺少依赖，点击启动器窗口里的“检查依赖”。
 4. 在浏览器界面导入表达矩阵和分组表。
@@ -26,7 +26,8 @@
 - 输出完整差异表和显著差异基因表。
 - 火山图支持颜色调整和 Top 显著基因名称标注。
 - 热图支持行聚类、列聚类开关和颜色调整。
-- PCA 图用于检查样本分组趋势。
+- PCA 图用于检查样本分组趋势，支持显示分组椭圆和分组中心点。
+- 各分析参数放在对应页签顶部，左侧只保留导入、注释和分组。
 - WGCNA 用于识别与分组相关的共表达模块，并输出模块 hub genes。
 - PPI 用于基于 STRING 互作表构建差异基因互作网络，并输出 hub genes。
 - GSEA 用于基于全部基因排序解释 GO 通路整体偏向。

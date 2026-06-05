@@ -2,7 +2,7 @@
 
 ## 普通用户
 
-1. 下载 `DifferentialAnalysisSoftware-v1.1.0.zip`。
+1. 下载 `DifferentialAnalysisSoftware-v1.1.1.zip`。
 2. 解压到任意英文或中文目录。
 3. 双击 `差异分析软件.exe`。
 4. 第一次打开时，如果提示缺少 R 或 R 包，点击“检查依赖”。

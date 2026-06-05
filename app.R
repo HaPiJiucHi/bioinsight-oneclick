@@ -420,12 +420,29 @@ make_pca_df <- function(result) {
   )
 }
 
-make_pca_plot <- function(result) {
+make_pca_plot <- function(result, show_ellipse = FALSE, show_centers = FALSE) {
   pca_df <- make_pca_df(result)
   if (is.null(pca_df)) {
     return(NULL)
   }
-  ggplot(pca_df, aes(PC1, PC2, color = group, label = sample)) +
+  plot <- ggplot(pca_df, aes(PC1, PC2, color = group, label = sample))
+  if (isTRUE(show_ellipse)) {
+    group_counts <- table(pca_df$group)
+    ellipse_groups <- names(group_counts[group_counts >= 3])
+    if (length(ellipse_groups) > 0) {
+      plot <- plot +
+        stat_ellipse(
+          data = pca_df[pca_df$group %in% ellipse_groups, , drop = FALSE],
+          aes(group = group),
+          type = "norm",
+          level = 0.95,
+          linewidth = 0.75,
+          alpha = 0.7,
+          show.legend = FALSE
+        )
+    }
+  }
+  plot <- plot +
     geom_point(size = 3, alpha = 0.85) +
     labs(
       x = pca_df$PC1_label[1],
@@ -434,6 +451,20 @@ make_pca_plot <- function(result) {
     ) +
     theme_minimal(base_size = 13) +
     theme(panel.grid.minor = element_blank(), legend.position = "top")
+  if (isTRUE(show_centers)) {
+    centers <- aggregate(cbind(PC1, PC2) ~ group, data = pca_df, FUN = mean)
+    plot <- plot +
+      geom_point(
+        data = centers,
+        aes(PC1, PC2, color = group),
+        inherit.aes = FALSE,
+        shape = 4,
+        size = 5,
+        stroke = 1.6,
+        show.legend = FALSE
+      )
+  }
+  plot
 }
 
 heatmap_matrix <- function(result, top_n = 50) {
@@ -960,6 +991,28 @@ ui <- fluidPage(
       .preview-section { margin-top: 18px; }
       .preview-section h4 { margin: 0 0 10px; line-height: 1.35; }
       .color-control { margin-top: 8px; }
+      .tab-controls {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin: 12px 0 14px;
+      }
+      .tab-controls h4 { margin-top: 0; }
+      .tab-controls .form-group { margin-bottom: 0; }
+      .control-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px 16px;
+        align-items: end;
+      }
+      .control-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-top: 12px;
+      }
       .analysis-note {
         background: #ffffff;
         border: 1px solid #e5e7eb;
@@ -991,6 +1044,11 @@ ui <- fluidPage(
       ),
       actionButton("load_example", "载入当前示例数据", class = "btn-default"),
       uiOutput("expr_options"),
+      fileInput(
+        "annotation_file",
+        "注释表（可选：第1列ID，第2列symbol）",
+        accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls")
+      ),
       tags$hr(),
       h4("2. 分组信息"),
       radioButtons(
@@ -1021,72 +1079,7 @@ ui <- fluidPage(
         "input.group_method == 'manual'",
         uiOutput("manual_group_ui")
       ),
-      uiOutput("group_select_ui"),
-      tags$hr(),
-      h4("3. 分析参数"),
-      selectInput(
-        "log_mode",
-        "log2 转换",
-        choices = c(
-          "自动判断" = "auto",
-          "不转换" = "none",
-          "强制 log2(x + 1)" = "always"
-        ),
-        selected = "auto"
-      ),
-      checkboxInput("normalize_between_arrays", "样本间分位数标准化", FALSE),
-      numericInput("logfc_cutoff", "log2FC 阈值", value = 1, min = 0, step = 0.1),
-      numericInput("p_cutoff", "P 值阈值", value = 0.05, min = 0, max = 1, step = 0.01),
-      selectInput(
-        "p_column",
-        "显著性列",
-        choices = c("P.Value", "adj.P.Val"),
-        selected = "P.Value"
-      ),
-      checkboxInput("volcano_label_enabled", "火山图标注显著基因", TRUE),
-      numericInput("volcano_label_top_n", "标注前 N 个显著基因", value = 10, min = 0, max = 100, step = 1),
-      numericInput("heatmap_top_n", "热图基因数", value = 50, min = 5, max = 300, step = 5),
-      checkboxInput("heatmap_cluster_rows", "热图行聚类", TRUE),
-      checkboxInput("heatmap_cluster_cols", "热图列聚类", TRUE),
-      tags$details(
-        tags$summary("颜色设置"),
-        colourpicker::colourInput("color_up", "上调颜色", "#dc2626"),
-        colourpicker::colourInput("color_stable", "稳定颜色", "#9ca3af"),
-        colourpicker::colourInput("color_down", "下调颜色", "#2563eb"),
-        colourpicker::colourInput("heatmap_low_color", "热图低值颜色", "#2563eb"),
-        colourpicker::colourInput("heatmap_mid_color", "热图中间颜色", "#ffffff"),
-        colourpicker::colourInput("heatmap_high_color", "热图高值颜色", "#dc2626")
-      ),
-      tags$hr(),
-      h4("4. WGCNA / PPI / GSEA"),
-      numericInput("wgcna_top_n", "WGCNA 高变基因数", value = 5000, min = 500, max = 20000, step = 500),
-      numericInput("wgcna_soft_power", "WGCNA soft power（0=自动）", value = 0, min = 0, max = 30, step = 1),
-      numericInput("wgcna_min_module_size", "WGCNA 最小模块基因数", value = 30, min = 10, max = 200, step = 5),
-      numericInput("wgcna_merge_cut_height", "WGCNA 模块合并阈值", value = 0.25, min = 0.05, max = 0.5, step = 0.05),
-      actionButton("run_wgcna", "运行 WGCNA", class = "btn-default"),
-      br(), br(),
-      fileInput(
-        "ppi_file",
-        "PPI 互作表（可选，默认读取 string_interactions.tsv）",
-        accept = c(".tsv", ".txt", ".csv", ".xlsx", ".xls")
-      ),
-      numericInput("ppi_score_cutoff", "PPI combined_score 阈值", value = 0.7, min = 0, max = 1, step = 0.05),
-      numericInput("ppi_max_genes", "PPI 最多差异基因数", value = 1000, min = 20, max = 2000, step = 20),
-      numericInput("ppi_label_top_n", "PPI 标注 hub 数", value = 15, min = 0, max = 100, step = 1),
-      actionButton("run_ppi", "运行 PPI", class = "btn-default"),
-      br(), br(),
-      selectInput("gsea_ontology", "GSEA GO 类型", choices = c("BP", "MF", "CC"), selected = "BP"),
-      numericInput("gsea_min_size", "GSEA 最小基因集", value = 10, min = 5, max = 100, step = 5),
-      numericInput("gsea_max_size", "GSEA 最大基因集", value = 500, min = 100, max = 2000, step = 50),
-      numericInput("gsea_p_cutoff", "GSEA padj 阈值", value = 0.25, min = 0, max = 1, step = 0.05),
-      numericInput("gsea_show_n", "GSEA 图显示条目数", value = 15, min = 5, max = 50, step = 5),
-      actionButton("run_gsea", "运行 GSEA", class = "btn-default"),
-      fileInput(
-        "annotation_file",
-        "注释表（可选：第1列ID，第2列symbol）",
-        accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls")
-      ),
-      actionButton("run_analysis", "一键开始差异分析", class = "btn-primary")
+      uiOutput("group_select_ui")
     ),
     mainPanel(
       width = 9,
@@ -1114,6 +1107,36 @@ ui <- fluidPage(
         ),
         tabPanel(
           "分析结果",
+          div(
+            class = "tab-controls",
+            h4("差异分析参数"),
+            div(
+              class = "control-grid",
+              selectInput(
+                "log_mode",
+                "log2 转换",
+                choices = c(
+                  "自动判断" = "auto",
+                  "不转换" = "none",
+                  "强制 log2(x + 1)" = "always"
+                ),
+                selected = "auto"
+              ),
+              checkboxInput("normalize_between_arrays", "样本间分位数标准化", FALSE),
+              numericInput("logfc_cutoff", "log2FC 阈值", value = 1, min = 0, step = 0.1),
+              numericInput("p_cutoff", "P 值阈值", value = 0.05, min = 0, max = 1, step = 0.01),
+              selectInput(
+                "p_column",
+                "显著性列",
+                choices = c("P.Value", "adj.P.Val"),
+                selected = "P.Value"
+              )
+            ),
+            div(
+              class = "control-actions",
+              actionButton("run_analysis", "一键开始差异分析", class = "btn-primary")
+            )
+          ),
           uiOutput("final_recommendation"),
           uiOutput("summary_cards"),
           downloadButton("download_all", "下载完整差异表"),
@@ -1123,25 +1146,99 @@ ui <- fluidPage(
         ),
         tabPanel(
           "火山图",
-          br(),
+          div(
+            class = "tab-controls",
+            h4("火山图参数"),
+            div(
+              class = "control-grid",
+              checkboxInput("volcano_label_enabled", "标注显著基因", TRUE),
+              numericInput("volcano_label_top_n", "标注前 N 个基因", value = 10, min = 0, max = 100, step = 1),
+              colourpicker::colourInput("color_up", "上调颜色", "#dc2626"),
+              colourpicker::colourInput("color_stable", "稳定颜色", "#9ca3af"),
+              colourpicker::colourInput("color_down", "下调颜色", "#2563eb")
+            )
+          ),
           downloadButton("download_volcano", "下载火山图 PNG"),
           plotOutput("volcano_plot", height = "620px")
         ),
         tabPanel(
           "热图",
-          br(),
+          div(
+            class = "tab-controls",
+            h4("热图参数"),
+            div(
+              class = "control-grid",
+              numericInput("heatmap_top_n", "热图基因数", value = 50, min = 5, max = 300, step = 5),
+              checkboxInput("heatmap_cluster_rows", "行聚类", TRUE),
+              checkboxInput("heatmap_cluster_cols", "列聚类", TRUE),
+              colourpicker::colourInput("heatmap_low_color", "低值颜色", "#2563eb"),
+              colourpicker::colourInput("heatmap_mid_color", "中间颜色", "#ffffff"),
+              colourpicker::colourInput("heatmap_high_color", "高值颜色", "#dc2626")
+            )
+          ),
           downloadButton("download_heatmap", "下载热图 PNG"),
           plotOutput("heatmap_plot", height = "720px")
         ),
         tabPanel(
           "PCA",
-          br(),
+          div(
+            class = "tab-controls",
+            h4("PCA 参数"),
+            div(
+              class = "control-grid",
+              checkboxInput("pca_show_ellipse", "显示分组椭圆", TRUE),
+              checkboxInput("pca_show_centers", "显示分组中心点", TRUE)
+            )
+          ),
           downloadButton("download_pca", "下载 PCA PNG"),
           plotOutput("pca_plot", height = "620px")
         ),
         tabPanel(
+          "GSEA",
+          div(
+            class = "tab-controls",
+            h4("GSEA 参数"),
+            div(
+              class = "control-grid",
+              selectInput("gsea_ontology", "GO 类型", choices = c("BP", "MF", "CC"), selected = "BP"),
+              numericInput("gsea_min_size", "最小基因集", value = 10, min = 5, max = 100, step = 5),
+              numericInput("gsea_max_size", "最大基因集", value = 500, min = 100, max = 2000, step = 50),
+              numericInput("gsea_p_cutoff", "padj 阈值", value = 0.25, min = 0, max = 1, step = 0.05),
+              numericInput("gsea_show_n", "图显示条目数", value = 15, min = 5, max = 50, step = 5)
+            ),
+            div(
+              class = "control-actions",
+              actionButton("run_gsea", "运行 GSEA", class = "btn-default")
+            )
+          ),
+          uiOutput("gsea_interpretation"),
+          downloadButton("download_gsea_table", "下载 GSEA 结果表"),
+          plotOutput("gsea_plot", height = "720px"),
+          h4("GSEA 结果"),
+          DT::DTOutput("gsea_table"),
+          div(
+            class = "analysis-note",
+            h4("为什么使用 GSEA"),
+            "GSEA 使用全部基因按表达变化排序，不只依赖显著差异基因阈值。很多通路不是由单个基因巨大变化驱动，而是一组基因整体轻中度同向变化；GSEA 能捕捉这种整体偏移，因此适合放在差异分析之后解释样本更偏向哪些生物过程。"
+          )
+        ),
+        tabPanel(
           "WGCNA",
-          br(),
+          div(
+            class = "tab-controls",
+            h4("WGCNA 参数"),
+            div(
+              class = "control-grid",
+              numericInput("wgcna_top_n", "高变基因数", value = 5000, min = 500, max = 20000, step = 500),
+              numericInput("wgcna_soft_power", "soft power（0=自动）", value = 0, min = 0, max = 30, step = 1),
+              numericInput("wgcna_min_module_size", "最小模块基因数", value = 30, min = 10, max = 200, step = 5),
+              numericInput("wgcna_merge_cut_height", "模块合并阈值", value = 0.25, min = 0.05, max = 0.5, step = 0.05)
+            ),
+            div(
+              class = "control-actions",
+              actionButton("run_wgcna", "运行 WGCNA", class = "btn-default")
+            )
+          ),
           uiOutput("wgcna_interpretation"),
           downloadButton("download_wgcna_modules", "下载 WGCNA 模块表"),
           downloadButton("download_wgcna_hubs", "下载 WGCNA hub genes"),
@@ -1153,22 +1250,31 @@ ui <- fluidPage(
         ),
         tabPanel(
           "PPI",
-          br(),
+          div(
+            class = "tab-controls",
+            h4("PPI 参数"),
+            fileInput(
+              "ppi_file",
+              "PPI 互作表（可选，默认读取 string_interactions.tsv）",
+              accept = c(".tsv", ".txt", ".csv", ".xlsx", ".xls")
+            ),
+            div(
+              class = "control-grid",
+              numericInput("ppi_score_cutoff", "combined_score 阈值", value = 0.7, min = 0, max = 1, step = 0.05),
+              numericInput("ppi_max_genes", "最多差异基因数", value = 1000, min = 20, max = 2000, step = 20),
+              numericInput("ppi_label_top_n", "标注 hub 数", value = 15, min = 0, max = 100, step = 1)
+            ),
+            div(
+              class = "control-actions",
+              actionButton("run_ppi", "运行 PPI", class = "btn-default")
+            )
+          ),
           uiOutput("ppi_interpretation"),
           downloadButton("download_ppi_hubs", "下载 PPI hub genes"),
           downloadButton("download_ppi_edges", "下载 PPI edges"),
           plotOutput("ppi_plot", height = "720px"),
           h4("PPI hub genes"),
           DT::DTOutput("ppi_hub_table")
-        ),
-        tabPanel(
-          "GSEA",
-          br(),
-          uiOutput("gsea_interpretation"),
-          downloadButton("download_gsea_table", "下载 GSEA 结果表"),
-          plotOutput("gsea_plot", height = "720px"),
-          h4("GSEA 结果"),
-          DT::DTOutput("gsea_table")
         )
       )
     )
@@ -1530,7 +1636,11 @@ server <- function(input, output, session) {
   })
 
   output$pca_plot <- renderPlot({
-    plot <- make_pca_plot(analysis_result())
+    plot <- make_pca_plot(
+      analysis_result(),
+      show_ellipse = isTRUE(input$pca_show_ellipse),
+      show_centers = isTRUE(input$pca_show_centers)
+    )
     validate(need(!is.null(plot), "当前数据不足以绘制 PCA。"))
     plot
   })
@@ -1660,7 +1770,11 @@ server <- function(input, output, session) {
   output$download_pca <- downloadHandler(
     filename = function() paste0("pca_", Sys.Date(), ".png"),
     content = function(file) {
-      plot <- make_pca_plot(analysis_result())
+      plot <- make_pca_plot(
+        analysis_result(),
+        show_ellipse = isTRUE(input$pca_show_ellipse),
+        show_centers = isTRUE(input$pca_show_centers)
+      )
       validate(need(!is.null(plot), "当前数据不足以绘制 PCA。"))
       ggplot2::ggsave(file, plot, width = 8, height = 6, dpi = 300)
     }
