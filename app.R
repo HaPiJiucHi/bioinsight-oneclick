@@ -86,6 +86,129 @@ read_any_table <- function(file) {
   as.data.frame(out, check.names = FALSE)
 }
 
+expression_template <- function() {
+  data.frame(
+    feature_id = c("GeneA", "GeneB", "GeneC"),
+    Normal_1 = c(8.1, 5.0, 10.4),
+    Normal_2 = c(8.3, 5.2, 10.1),
+    Disease_1 = c(10.2, 4.8, 12.8),
+    Disease_2 = c(10.0, 4.7, 12.5),
+    check.names = FALSE
+  )
+}
+
+group_template <- function() {
+  data.frame(
+    sample = c("Normal_1", "Normal_2", "Disease_1", "Disease_2"),
+    group = c("Normal", "Normal", "Disease", "Disease"),
+    stringsAsFactors = FALSE
+  )
+}
+
+read_geo_lines <- function(path) {
+  con <- if (grepl("\\.gz$", path, ignore.case = TRUE)) {
+    gzfile(path, open = "rt", encoding = "UTF-8")
+  } else {
+    file(path, open = "rt", encoding = "UTF-8")
+  }
+  on.exit(close(con), add = TRUE)
+  readLines(con, warn = FALSE)
+}
+
+parse_geo_record <- function(line) {
+  out <- read.delim(
+    text = line,
+    header = FALSE,
+    sep = "\t",
+    quote = "\"",
+    comment.char = "",
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+  as.character(out[1, ])
+}
+
+safe_column_name <- function(x) {
+  x <- trim_text(x)
+  x <- gsub("[^A-Za-z0-9_]+", "_", x)
+  x <- gsub("^_+|_+$", "", x)
+  ifelse(nzchar(x), x, "metadata")
+}
+
+parse_geo_series_matrix <- function(file) {
+  path <- if (is.list(file) && !is.null(file$datapath)) file$datapath else file
+  lines <- read_geo_lines(path)
+  begin <- grep("^!series_matrix_table_begin", lines, ignore.case = TRUE)
+  end <- grep("^!series_matrix_table_end", lines, ignore.case = TRUE)
+  if (length(begin) == 0 || length(end) == 0 || end[1] <= begin[1] + 1) {
+    stop("没有在 GEO Series Matrix 中找到表达矩阵区段。请确认上传的是 series_matrix.txt 或 series_matrix.txt.gz。")
+  }
+
+  matrix_text <- paste(lines[(begin[1] + 1):(end[1] - 1)], collapse = "\n")
+  expr <- read.delim(
+    text = matrix_text,
+    header = TRUE,
+    sep = "\t",
+    quote = "\"",
+    comment.char = "",
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
+  if (ncol(expr) < 3) {
+    stop("GEO 表达矩阵样本列太少，无法继续分析。")
+  }
+  names(expr)[1] <- "feature_id"
+
+  samples <- names(expr)[-1]
+  sample_meta <- data.frame(sample = samples, stringsAsFactors = FALSE)
+  sample_lines <- grep("^!Sample_", lines, value = TRUE)
+  used_names <- names(sample_meta)
+
+  for (line in sample_lines) {
+    fields <- parse_geo_record(line)
+    if (length(fields) < 2) {
+      next
+    }
+    key <- sub("^!", "", fields[1])
+    values <- fields[-1]
+    if (length(values) != length(samples)) {
+      next
+    }
+    base_name <- safe_column_name(key)
+    col_name <- make.unique(c(used_names, base_name))[length(used_names) + 1]
+    used_names <- c(used_names, col_name)
+    sample_meta[[col_name]] <- trim_text(values)
+
+    colon_pos <- regexpr(":", values, fixed = TRUE)
+    if (all(colon_pos > 0)) {
+      labels <- trim_text(substr(values, 1, colon_pos - 1))
+      if (length(unique(labels)) == 1 && nzchar(labels[1])) {
+        parsed_name <- safe_column_name(labels[1])
+        parsed_col <- make.unique(c(used_names, parsed_name))[length(used_names) + 1]
+        used_names <- c(used_names, parsed_col)
+        sample_meta[[parsed_col]] <- trim_text(substr(values, colon_pos + 1, nchar(values)))
+      }
+    }
+  }
+
+  list(expr = expr, samples = sample_meta)
+}
+
+geo_group_candidate_cols <- function(sample_meta) {
+  cols <- setdiff(names(sample_meta), "sample")
+  if (length(cols) == 0) {
+    return(character())
+  }
+  good <- vapply(cols, function(col) {
+    values <- trim_text(sample_meta[[col]])
+    values <- values[nzchar(values)]
+    n <- length(unique(values))
+    n >= 2 && n <= min(10, max(2, nrow(sample_meta) - 1))
+  }, logical(1))
+  out <- cols[good]
+  if (length(out) > 0) out else cols
+}
+
 needs_log2_transform <- function(mat) {
   x <- mat[is.finite(mat)]
   if (length(x) == 0 || min(x, na.rm = TRUE) < 0) {
@@ -980,6 +1103,25 @@ ui <- fluidPage(
       .metric-label { color: #6b7280; font-size: 12px; }
       .metric-value { color: #111827; font-size: 22px; font-weight: 650; }
       .hint { color: #6b7280; font-size: 13px; line-height: 1.45; }
+      .helper-card {
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin: 10px 0 12px;
+        line-height: 1.55;
+      }
+      .helper-card summary {
+        cursor: pointer;
+        font-weight: 650;
+        color: #0f766e;
+      }
+      .template-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 8px 0 10px;
+      }
       .empty-state {
         background: #ffffff;
         border: 1px solid #e5e7eb;
@@ -1043,6 +1185,31 @@ ui <- fluidPage(
         accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls")
       ),
       actionButton("load_example", "载入当前示例数据", class = "btn-default"),
+      tags$details(
+        class = "helper-card",
+        tags$summary("新手：没有表达矩阵/分组表？"),
+        tags$p("最省事的做法：先下载模板看格式；如果是 GEO 数据，可以上传 series_matrix.txt.gz，软件会自动拆出表达矩阵和样本信息。"),
+        div(
+          class = "template-actions",
+          downloadButton("download_expr_template", "表达矩阵模板"),
+          downloadButton("download_group_template", "分组表模板")
+        ),
+        fileInput(
+          "geo_series_file",
+          "GEO Series Matrix（.txt 或 .txt.gz，可选）",
+          accept = c(".txt", ".gz")
+        ),
+        actionButton("load_geo_series", "拆出 GEO 表达矩阵", class = "btn-default"),
+        div(
+          class = "template-actions",
+          downloadButton("download_geo_expression", "下载拆出的表达矩阵"),
+          downloadButton("download_geo_samples", "下载样本信息表")
+        ),
+        tags$p(
+          class = "hint",
+          "提示：GEO 页面通常在 Download family 或 Series Matrix File(s) 里下载 series_matrix.txt.gz。临床/分组信息常在样本 title、source 或 characteristics 字段里。"
+        )
+      ),
       uiOutput("expr_options"),
       fileInput(
         "annotation_file",
@@ -1087,23 +1254,7 @@ ui <- fluidPage(
         tabPanel(
           "数据检查",
           br(),
-          div(
-            class = "empty-state",
-            div(
-              class = "hint",
-              "表达矩阵格式：第一列是基因或探针 ID，其余列是样本表达值。分组表格式：至少包含 sample 和 group 两列，样本名必须与表达矩阵列名一致。"
-            )
-          ),
-          div(
-            class = "preview-section",
-            h4("表达矩阵预览"),
-            DT::DTOutput("expr_preview")
-          ),
-          div(
-            class = "preview-section",
-            h4("分组预览"),
-            DT::DTOutput("group_preview")
-          )
+          uiOutput("data_check_ui")
         ),
         tabPanel(
           "分析结果",
@@ -1283,9 +1434,11 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   data_state <- reactiveVal(NULL)
+  geo_state <- reactiveVal(NULL)
 
   observeEvent(input$expr_file, {
     df <- read_any_table(input$expr_file)
+    geo_state(NULL)
     data_state(list(
       expr = df,
       groups = NULL,
@@ -1312,6 +1465,7 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
     annotation_df <- if (exists("ids", envir = env)) env$ids else NULL
+    geo_state(NULL)
     data_state(list(
       expr = expr_df,
       groups = group_df,
@@ -1319,6 +1473,37 @@ server <- function(input, output, session) {
       label = "step2output.Rdata"
     ))
     updateRadioButtons(session, "group_method", selected = "file")
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$load_geo_series, {
+    req(input$geo_series_file)
+    parsed <- tryCatch(
+      parse_geo_series_matrix(input$geo_series_file),
+      error = function(e) {
+        showNotification(e$message, type = "error", duration = 8)
+        NULL
+      }
+    )
+    if (is.null(parsed)) {
+      return()
+    }
+
+    geo_state(parsed)
+    data_state(list(
+      expr = parsed$expr,
+      groups = NULL,
+      annotation = NULL,
+      label = paste0(input$geo_series_file$name, " / GEO")
+    ))
+    updateRadioButtons(session, "group_method", selected = "manual")
+    showNotification(
+      paste0(
+        "已拆出表达矩阵：", nrow(parsed$expr), " 个特征，",
+        ncol(parsed$expr) - 1, " 个样本。请在数据检查页选择样本信息列生成分组，或手动填写分组。"
+      ),
+      type = "message",
+      duration = 8
+    )
   }, ignoreInit = TRUE)
 
   expr_df <- reactive({
@@ -1345,13 +1530,14 @@ server <- function(input, output, session) {
 
   output$data_check_ui <- renderUI({
     state <- data_state()
+    geo <- geo_state()
     if (is.null(state)) {
       return(div(
         class = "empty-state",
         h4("请先导入数据"),
         div(
           class = "hint",
-          "表达矩阵格式：第一列是基因或探针 ID，其余列是样本表达值。分组表格式：至少包含 sample 和 group 两列，样本名必须与表达矩阵列名一致。"
+          "表达矩阵格式：第一列是基因或探针 ID，其余列是样本表达值。分组表格式：至少包含 sample 和 group 两列，样本名必须与表达矩阵列名一致。新手可以先在左侧下载模板，或上传 GEO series_matrix.txt.gz 自动拆出表达矩阵和样本信息。"
         )
       ))
     }
@@ -1360,6 +1546,16 @@ server <- function(input, output, session) {
       div(
         class = "hint",
         "表达矩阵格式：第一列是基因或探针 ID，其余列是样本表达值。分组表格式：至少包含 sample 和 group 两列，样本名必须与表达矩阵列名一致。"
+      ),
+      if (!is.null(geo)) div(
+        class = "preview-section",
+        h4("GEO 样本信息"),
+        div(
+          class = "hint",
+          "如果样本信息里已经有疾病、处理、组织、分型等字段，可以选择一列作为分组。生成后仍可在左侧手动修改。"
+        ),
+        uiOutput("geo_group_builder_ui"),
+        DT::DTOutput("geo_sample_preview")
       ),
       div(
         class = "preview-section",
@@ -1371,6 +1567,62 @@ server <- function(input, output, session) {
         h4("分组预览"),
         DT::DTOutput("group_preview")
       )
+    )
+  })
+
+  output$geo_group_builder_ui <- renderUI({
+    geo <- geo_state()
+    req(geo)
+    choices <- geo_group_candidate_cols(geo$samples)
+    if (length(choices) == 0) {
+      return(div(class = "hint", "这个 GEO 文件没有解析到可用的样本信息列，请改用手动分组。"))
+    }
+    div(
+      class = "control-actions",
+      selectInput(
+        "geo_group_col",
+        "用哪一列作为分组",
+        choices = choices,
+        selected = choices[1],
+        width = "260px"
+      ),
+      actionButton("apply_geo_group", "用该列生成分组表", class = "btn-default")
+    )
+  })
+
+  observeEvent(input$apply_geo_group, {
+    geo <- geo_state()
+    req(geo, input$geo_group_col)
+    values <- trim_text(geo$samples[[input$geo_group_col]])
+    group_df <- data.frame(
+      sample = geo$samples$sample,
+      group = values,
+      stringsAsFactors = FALSE
+    )
+    group_df <- group_df[nzchar(group_df$group), , drop = FALSE]
+    if (length(unique(group_df$group)) < 2) {
+      showNotification("这一列不足两个分组，请换一列，或手动填写分组。", type = "warning", duration = 6)
+      return()
+    }
+    state <- data_state()
+    data_state(list(
+      expr = state$expr,
+      groups = group_df,
+      annotation = state$annotation,
+      label = state$label
+    ))
+    updateRadioButtons(session, "group_method", selected = "file")
+    showNotification("已根据 GEO 样本信息生成分组表。", type = "message", duration = 5)
+  }, ignoreInit = TRUE)
+
+  output$geo_sample_preview <- DT::renderDT({
+    geo <- geo_state()
+    validate(need(!is.null(geo), "请先上传并拆出 GEO Series Matrix。"))
+    DT::datatable(
+      geo$samples,
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 10, scrollX = TRUE)
     )
   })
 
@@ -1724,6 +1976,38 @@ server <- function(input, output, session) {
       options = list(pageLength = 20, scrollX = TRUE)
     )
   })
+
+  output$download_expr_template <- downloadHandler(
+    filename = function() "expression_matrix_template.csv",
+    content = function(file) {
+      write.csv(expression_template(), file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$download_group_template <- downloadHandler(
+    filename = function() "group_table_template.csv",
+    content = function(file) {
+      write.csv(group_template(), file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$download_geo_expression <- downloadHandler(
+    filename = function() paste0("GEO_expression_matrix_", Sys.Date(), ".csv"),
+    content = function(file) {
+      geo <- geo_state()
+      validate(need(!is.null(geo), "请先上传并拆出 GEO Series Matrix。"))
+      write.csv(geo$expr, file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
+
+  output$download_geo_samples <- downloadHandler(
+    filename = function() paste0("GEO_sample_metadata_", Sys.Date(), ".csv"),
+    content = function(file) {
+      geo <- geo_state()
+      validate(need(!is.null(geo), "请先上传并拆出 GEO Series Matrix。"))
+      write.csv(geo$samples, file, row.names = FALSE, fileEncoding = "UTF-8")
+    }
+  )
 
   output$download_all <- downloadHandler(
     filename = function() paste0("DEG_all_", Sys.Date(), ".csv"),

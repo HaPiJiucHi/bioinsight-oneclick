@@ -37,3 +37,11 @@ print(head(table_for_display(result$deg), 3))
 print(dim(heatmap_matrix(result, 50)))
 print(!is.null(make_volcano(result)))
 print(!is.null(make_pca_plot(result)))
+
+if (file.exists("GSE7305_series_matrix.txt.gz")) {
+  geo <- parse_geo_series_matrix("GSE7305_series_matrix.txt.gz")
+  stopifnot(nrow(geo$expr) > 0)
+  stopifnot(nrow(geo$samples) == ncol(geo$expr) - 1)
+  print(dim(geo$expr))
+  print(dim(geo$samples))
+}
