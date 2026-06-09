@@ -2,11 +2,11 @@
 
 <img src="docs/assets/app-icon.png" width="96" alt="BioInsight icon">
 
-> 面向生信入门、课题组教学和非编程用户的 Windows 本地生信分析平台：导入表达矩阵和分组信息，一键完成 DEG、火山图、热图、PCA、GSEA、WGCNA 和 PPI。
+> 面向生信入门、课题组教学和非编程用户的 Windows 本地生信分析平台：导入表达矩阵和分组信息，一键完成 DEG、质控图、富集分析、GSEA、WGCNA 和 PPI。
 
 [![Windows](https://img.shields.io/badge/Windows-one--click-2563eb)](#一键安装)
 [![R/Shiny](https://img.shields.io/badge/R%20Shiny-local-0f766e)](#本地开发)
-[![Release](https://img.shields.io/badge/Download-v1.2.1-dc2626)](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.2.1)
+[![Release](https://img.shields.io/badge/Download-v1.5.1-dc2626)](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.5.1)
 [![License](https://img.shields.io/badge/License-MIT-111827)](LICENSE)
 
 ![软件界面](docs/assets/software-interface.png)
@@ -17,14 +17,14 @@
 
 - **一键导入**：表达矩阵、分组表、注释表。
 - **新手数据准备**：提供表达矩阵/分组表模板，并支持 GEO `series_matrix.txt.gz` 拆分表达矩阵和样本信息。
-- **一键分析**：`limma` DEG 分析，自动生成差异表。
-- **一键出图**：火山图、热图、PCA。
-- **机制解释**：GSEA 看通路整体偏向，WGCNA 看共表达模块，PPI 找候选 hub genes。
+- **一键分析**：自动识别数据类型并选择 `limma`、`DESeq2`、`edgeR` 或 `limma-voom`，自动生成差异表。
+- **一键出图**：火山图、热图、箱线图、PCA。
+- **机制解释**：差异基因 GO/KEGG 富集、GSEA、WGCNA 和 PPI。
 
 ## 一键安装
 
-1. 打开 [Release v1.2.1](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.2.1)。
-2. 下载 `BioInsight-OneClick-Bioinformatics-v1.2.1.zip`。
+1. 打开 [Release v1.5.1](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.5.1)。
+2. 下载 `BioInsight-OneClick-Bioinformatics-v1.5.1.zip`。
 3. 解压后双击 `BioInsight 一键生信分析平台.exe`。
 4. 第一次运行如果提示缺少依赖，点击“检查依赖”。
 
@@ -40,20 +40,32 @@
 
 详细说明见：[新手数据准备](docs/DATA_PREP.md)。
 
+## 不知道自己的数据类型怎么选？
+
+软件默认会在“数据检查”页自动判断并选择分析方法。简单记：
+
+- **RNA-seq raw counts**：值基本都是整数，例如 0、1、2、150、3000，文件名常见 `count`、`counts`、`readcount`。正式 RNA-seq 差异分析优先选这个，自动模式默认用 `DESeq2`，并默认过滤总 counts 小于 2 的极低表达基因。
+- **RNA-seq TPM/FPKM/RPKM**：值经常带小数，文件名常见 `TPM`、`FPKM`、`RPKM`。适合快速探索、作图、GSEA、WGCNA。
+- **芯片/已标准化表达矩阵**：GEO 芯片或 normalized expression，值通常是 log2 后的小数，有时会有负值。使用 `limma`。
+- **差异结果表不是表达矩阵**：如果文件已经有 `logFC`、`P.Value`、`padj`，它是分析结果，不能直接当表达矩阵导入。
+
 ## 分析流程
 
 ```mermaid
 flowchart LR
   A["下载模板或 GEO series_matrix"] --> B["生成表达矩阵和分组表"]
-  B --> C["limma DEG 分析"]
-  C --> D["差异结果表"]
-  C --> E["火山图 / 热图 / PCA"]
-  C --> F["GSEA 通路解释"]
-  C --> G["WGCNA 共表达模块"]
-  C --> H["PPI hub genes"]
-  F --> I["形成生物学解释"]
-  G --> I
-  H --> I
+  B --> C["选择数据类型"]
+  C --> D["limma / DESeq2 / edgeR / voom DEG"]
+  D --> E["差异结果表"]
+  D --> F["火山图 / 热图 / 箱线图 / PCA"]
+  D --> G["差异基因 GO/KEGG 富集"]
+  D --> H["GSEA 通路整体偏向"]
+  D --> I["WGCNA 共表达模块"]
+  D --> J["PPI hub genes"]
+  G --> K["形成生物学解释"]
+  H --> K
+  I --> K
+  J --> K
 ```
 
 ## 结果展示
@@ -75,12 +87,16 @@ flowchart LR
 - 支持 `.csv`、`.tsv`、`.txt`、`.xlsx`、`.xls`。
 - 支持 GEO `series_matrix.txt.gz` 拆分表达矩阵和样本信息。
 - 支持分组文件、样本名关键词、手动粘贴、GEO 样本信息列生成分组。
-- 火山图支持颜色调整和 Top 显著基因名称标注。
+- 支持自动识别芯片/标准化表达矩阵、RNA-seq TPM/FPKM/RPKM、RNA-seq raw counts。
+- RNA-seq raw counts 支持 `DESeq2`、`edgeR` 和 `limma-voom`，默认先过滤总 counts 小于 2 的极低表达基因，可在“数据检查”页调整。
+- 火山图支持颜色调整，并可分别控制升高/降低基因名称标注。
 - 热图支持行聚类、列聚类开关和颜色调整。
+- 箱线图用于检查样本整体表达分布和特殊样本。
 - PCA 支持分组椭圆和分组中心点。
-- GSEA 支持 GO BP、MF、CC。
+- 差异基因富集分析支持上调、下调、合并和上/下调分别分析，支持 GO BP、MF、CC 和 KEGG。
+- GSEA 支持 GO BP、MF、CC 和 KEGG。
 - WGCNA 输出模块相关性和模块 hub genes。
-- PPI 默认读取同目录 `string_interactions.tsv`，也可上传自己的 STRING interaction 文件。
+- PPI 支持显著差异基因或手动输入候选基因，支持在线 STRING 查询，也可上传自己的 STRING interaction 文件。
 
 ## 本地开发
 

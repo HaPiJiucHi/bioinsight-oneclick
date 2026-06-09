@@ -5,7 +5,9 @@ cran_packages <- c(
   "shiny", "ggplot2", "readr", "readxl", "DT", "pheatmap", "matrixStats",
   "ggrepel", "colourpicker", "igraph", "WGCNA"
 )
-bioc_packages <- c("limma", "clusterProfiler", "org.Hs.eg.db", "enrichplot")
+bioc_packages <- c(
+  "limma", "DESeq2", "edgeR", "clusterProfiler", "org.Hs.eg.db", "enrichplot"
+)
 
 if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager", ask = FALSE, update = FALSE)

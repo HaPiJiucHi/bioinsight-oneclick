@@ -3,7 +3,7 @@ options(shiny.maxRequestSize = 500 * 1024^2)
 required_packages <- c(
   "shiny", "limma", "ggplot2", "readr", "readxl", "DT", "pheatmap",
   "matrixStats", "ggrepel", "colourpicker", "WGCNA", "igraph",
-  "clusterProfiler", "org.Hs.eg.db", "enrichplot"
+  "clusterProfiler", "org.Hs.eg.db", "enrichplot", "DESeq2", "edgeR"
 )
 
 missing_packages <- required_packages[
@@ -279,6 +279,166 @@ prepare_expression <- function(df, id_col, log_mode, normalize_between_arrays) {
   )
 }
 
+prepare_count_expression <- function(df, id_col, min_total_count = 2) {
+  if (is.null(df) || nrow(df) == 0) {
+    stop("表达矩阵为空。")
+  }
+  if (!id_col %in% names(df)) {
+    stop("找不到选择的 ID 列。")
+  }
+
+  sample_cols <- setdiff(names(df), id_col)
+  if (length(sample_cols) < 2) {
+    stop("raw count 矩阵至少需要 2 个样本列。")
+  }
+
+  feature_id <- trim_text(df[[id_col]])
+  valid_feature <- !is.na(feature_id) & nzchar(feature_id)
+  if (!any(valid_feature)) {
+    stop("ID 列没有可用的基因/探针 ID。")
+  }
+
+  mat_df <- df[valid_feature, sample_cols, drop = FALSE]
+  mat_df[] <- lapply(mat_df, numeric_clean)
+  mat <- as.matrix(mat_df)
+  storage.mode(mat) <- "double"
+
+  good_cols <- colSums(is.finite(mat)) > 0
+  mat <- mat[, good_cols, drop = FALSE]
+  sample_cols <- sample_cols[good_cols]
+  if (ncol(mat) < 2) {
+    stop("可识别为数值的样本列少于 2 列。")
+  }
+
+  if (any(mat < 0, na.rm = TRUE)) {
+    stop("raw count 不能包含负值。请确认数据类型是否应选择 TPM/FPKM 或芯片/已标准化表达矩阵。")
+  }
+
+  finite_values <- mat[is.finite(mat)]
+  if (length(finite_values) == 0) {
+    stop("raw count 矩阵没有可用数值。")
+  }
+  integer_like <- abs(finite_values - round(finite_values)) <= 1e-6
+  if (mean(integer_like) < 0.99) {
+    stop("raw count 应该基本都是整数。当前矩阵包含较多小数，更像 TPM/FPKM 或标准化表达量。")
+  }
+  mat <- round(mat)
+
+  min_total_count <- numeric_clean(min_total_count)
+  if (!is.finite(min_total_count) || min_total_count < 1) {
+    min_total_count <- 1
+  }
+  min_total_count <- floor(min_total_count)
+
+  good_rows <- rowSums(is.finite(mat)) >= 2 & rowSums(mat, na.rm = TRUE) >= min_total_count
+  mat <- mat[good_rows, , drop = FALSE]
+  feature_id <- feature_id[valid_feature][good_rows]
+  if (nrow(mat) < 2) {
+    stop("过滤全 0 或无效行后，可用于分析的基因少于 2 行。")
+  }
+
+  rownames(mat) <- make.unique(feature_id)
+  colnames(mat) <- sample_cols
+
+  list(
+    counts = mat,
+    feature_id = feature_id,
+    transformed = FALSE,
+    normalized = FALSE,
+    min_total_count = min_total_count
+  )
+}
+
+align_two_group_samples <- function(mat, group_df, control_group, treatment_group) {
+  group_df <- group_df[group_df$sample %in% colnames(mat), , drop = FALSE]
+  group_df <- group_df[match(colnames(mat), group_df$sample), , drop = FALSE]
+  groups <- group_df$group
+
+  keep_samples <- !is.na(groups) & groups %in% c(control_group, treatment_group)
+  mat <- mat[, keep_samples, drop = FALSE]
+  groups <- groups[keep_samples]
+  if (ncol(mat) < 4) {
+    stop("差异分析至少建议每组 2 个样本；当前可用样本总数少于 4。")
+  }
+  group_counts <- table(groups)
+  if (!all(c(control_group, treatment_group) %in% names(group_counts)) ||
+      any(group_counts[c(control_group, treatment_group)] < 2)) {
+    stop("对照组和处理组都至少需要 2 个匹配样本。")
+  }
+
+  list(mat = mat, groups = groups)
+}
+
+add_symbols_and_change <- function(deg, feature_id, annotation, p_column,
+                                   p_cutoff, logfc_cutoff) {
+  deg$row_id <- rownames(deg)
+  if (is.null(names(feature_id))) {
+    names(feature_id) <- feature_id
+  }
+  deg$feature_id <- unname(feature_id[match(deg$row_id, names(feature_id))])
+  missing_feature <- is.na(deg$feature_id) | !nzchar(deg$feature_id)
+  deg$feature_id[missing_feature] <- deg$row_id[missing_feature]
+  deg$symbol <- deg$feature_id
+
+  if (!is.null(annotation)) {
+    matched_symbol <- annotation$symbol[match(deg$feature_id, annotation$feature_id)]
+    use_symbol <- !is.na(matched_symbol) & nzchar(matched_symbol)
+    deg$symbol[use_symbol] <- matched_symbol[use_symbol]
+  }
+
+  if (!p_column %in% names(deg)) {
+    stop("结果表中找不到显著性列：", p_column)
+  }
+  p_values <- deg[[p_column]]
+  deg$change <- ifelse(
+    !is.na(p_values) & p_values < p_cutoff & deg$logFC > logfc_cutoff,
+    "up",
+    ifelse(
+      !is.na(p_values) & p_values < p_cutoff & deg$logFC < -logfc_cutoff,
+      "down",
+      "stable"
+    )
+  )
+  deg$change <- factor(deg$change, levels = c("down", "stable", "up"))
+
+  ordered_cols <- c(
+    "row_id", "feature_id", "symbol", "logFC", "log2FoldChange",
+    "AveExpr", "logCPM", "baseMean", "t", "stat", "LR", "F",
+    "P.Value", "pvalue", "adj.P.Val", "padj", "FDR", "B", "change"
+  )
+  deg[, c(ordered_cols[ordered_cols %in% names(deg)],
+          setdiff(names(deg), ordered_cols)), drop = FALSE]
+}
+
+make_analysis_result <- function(deg, mat, groups, feature_id, control_group,
+                                 treatment_group, p_cutoff, logfc_cutoff,
+                                 p_column, annotation, transformed, normalized,
+                                 data_type, analysis_method) {
+  deg <- add_symbols_and_change(
+    deg = deg,
+    feature_id = feature_id,
+    annotation = annotation,
+    p_column = p_column,
+    p_cutoff = p_cutoff,
+    logfc_cutoff = logfc_cutoff
+  )
+
+  list(
+    deg = deg,
+    mat = mat,
+    groups = groups,
+    control_group = control_group,
+    treatment_group = treatment_group,
+    p_cutoff = p_cutoff,
+    logfc_cutoff = logfc_cutoff,
+    p_column = p_column,
+    transformed = transformed,
+    normalized = normalized,
+    data_type = data_type,
+    analysis_method = analysis_method
+  )
+}
+
 parse_manual_groups <- function(text) {
   if (is.null(text) || !nzchar(trimws(text))) {
     return(data.frame(sample = character(), group = character()))
@@ -344,9 +504,27 @@ read_annotation <- function(file, default_annotation = NULL) {
     return(NULL)
   }
 
+  lower_names <- tolower(names(df))
+  pick_col <- function(candidates, fallback) {
+    idx <- match(tolower(candidates), lower_names)
+    idx <- idx[!is.na(idx)]
+    if (length(idx) > 0) {
+      return(names(df)[idx[1]])
+    }
+    fallback
+  }
+  id_col <- pick_col(
+    c("feature_id", "gene", "gene_id", "id", "ensembl_gene_id", "probe_id"),
+    names(df)[1]
+  )
+  symbol_col <- pick_col(
+    c("symbol", "gene_name", "gene_symbol", "hgnc_symbol", "external_gene_name"),
+    names(df)[2]
+  )
+
   out <- data.frame(
-    feature_id = trim_text(df[[1]]),
-    symbol = trim_text(df[[2]]),
+    feature_id = trim_text(df[[id_col]]),
+    symbol = trim_text(df[[symbol_col]]),
     stringsAsFactors = FALSE
   )
   out <- out[nzchar(out$feature_id) & nzchar(out$symbol), , drop = FALSE]
@@ -446,7 +624,310 @@ run_differential_analysis <- function(prepared, group_df, control_group,
     logfc_cutoff = logfc_cutoff,
     p_column = p_column,
     transformed = prepared$transformed,
-    normalized = prepared$normalized
+    normalized = prepared$normalized,
+    data_type = "芯片/已标准化表达矩阵",
+    analysis_method = "limma"
+  )
+}
+
+run_deseq2_analysis <- function(prepared, group_df, control_group,
+                                treatment_group, p_cutoff, logfc_cutoff,
+                                p_column, annotation) {
+  aligned <- align_two_group_samples(
+    prepared$counts,
+    group_df,
+    control_group,
+    treatment_group
+  )
+  count_mat <- aligned$mat
+  groups <- aligned$groups
+  row_ok <- rowSums(count_mat, na.rm = TRUE) > 0
+  count_mat <- count_mat[row_ok, , drop = FALSE]
+  feature_id <- prepared$feature_id[match(rownames(count_mat), rownames(prepared$counts))]
+  names(feature_id) <- rownames(count_mat)
+
+  group_factor <- factor(groups, levels = c(control_group, treatment_group))
+  col_data <- data.frame(group = group_factor, row.names = colnames(count_mat))
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(count_mat),
+    colData = col_data,
+    design = ~ group
+  )
+  dds <- DESeq2::DESeq(dds, quiet = TRUE)
+  res <- DESeq2::results(
+    dds,
+    contrast = c("group", treatment_group, control_group)
+  )
+  deg <- as.data.frame(res)
+  deg$logFC <- deg$log2FoldChange
+  deg$P.Value <- deg$pvalue
+  deg$adj.P.Val <- deg$padj
+  deg$t <- deg$stat
+
+  plot_mat <- log2(DESeq2::counts(dds, normalized = TRUE) + 1)
+  deg$AveExpr <- rowMeans(plot_mat, na.rm = TRUE)
+
+  make_analysis_result(
+    deg = deg,
+    mat = plot_mat,
+    groups = groups,
+    feature_id = feature_id,
+    control_group = control_group,
+    treatment_group = treatment_group,
+    p_cutoff = p_cutoff,
+    logfc_cutoff = logfc_cutoff,
+    p_column = p_column,
+    annotation = annotation,
+    transformed = TRUE,
+    normalized = TRUE,
+    data_type = "RNA-seq raw counts",
+    analysis_method = "DESeq2"
+  )
+}
+
+run_edger_analysis <- function(prepared, group_df, control_group,
+                               treatment_group, p_cutoff, logfc_cutoff,
+                               p_column, annotation) {
+  aligned <- align_two_group_samples(
+    prepared$counts,
+    group_df,
+    control_group,
+    treatment_group
+  )
+  count_mat <- aligned$mat
+  groups <- aligned$groups
+  group_factor <- factor(groups, levels = c(control_group, treatment_group))
+
+  dge <- edgeR::DGEList(counts = count_mat, group = group_factor)
+  keep <- edgeR::filterByExpr(dge, group = group_factor)
+  dge <- dge[keep, , keep.lib.sizes = FALSE]
+  if (nrow(dge) < 2) {
+    stop("edgeR 过滤低表达基因后，可用于分析的基因少于 2 行。")
+  }
+  feature_id <- prepared$feature_id[match(rownames(dge), rownames(prepared$counts))]
+  names(feature_id) <- rownames(dge)
+  dge <- edgeR::calcNormFactors(dge)
+
+  design <- model.matrix(~0 + group_factor)
+  colnames(design) <- c("control", "treatment")
+  fit <- edgeR::glmQLFit(dge, design)
+  qlf <- edgeR::glmQLFTest(fit, contrast = c(-1, 1))
+  deg <- edgeR::topTags(qlf, n = Inf, sort.by = "PValue")$table
+  deg$P.Value <- deg$PValue
+  deg$adj.P.Val <- deg$FDR
+  deg$t <- deg$F
+
+  plot_mat <- edgeR::cpm(dge, log = TRUE, prior.count = 1)
+  deg$AveExpr <- rowMeans(plot_mat[rownames(deg), , drop = FALSE], na.rm = TRUE)
+
+  make_analysis_result(
+    deg = deg,
+    mat = plot_mat,
+    groups = groups,
+    feature_id = feature_id,
+    control_group = control_group,
+    treatment_group = treatment_group,
+    p_cutoff = p_cutoff,
+    logfc_cutoff = logfc_cutoff,
+    p_column = p_column,
+    annotation = annotation,
+    transformed = TRUE,
+    normalized = TRUE,
+    data_type = "RNA-seq raw counts",
+    analysis_method = "edgeR"
+  )
+}
+
+run_voom_analysis <- function(prepared, group_df, control_group,
+                              treatment_group, p_cutoff, logfc_cutoff,
+                              p_column, annotation) {
+  aligned <- align_two_group_samples(
+    prepared$counts,
+    group_df,
+    control_group,
+    treatment_group
+  )
+  count_mat <- aligned$mat
+  groups <- aligned$groups
+  group_factor <- factor(groups, levels = c(control_group, treatment_group))
+
+  dge <- edgeR::DGEList(counts = count_mat, group = group_factor)
+  keep <- edgeR::filterByExpr(dge, group = group_factor)
+  dge <- dge[keep, , keep.lib.sizes = FALSE]
+  if (nrow(dge) < 2) {
+    stop("limma-voom 过滤低表达基因后，可用于分析的基因少于 2 行。")
+  }
+  feature_id <- prepared$feature_id[match(rownames(dge), rownames(prepared$counts))]
+  names(feature_id) <- rownames(dge)
+  dge <- edgeR::calcNormFactors(dge)
+
+  design <- model.matrix(~0 + group_factor)
+  colnames(design) <- c("control", "treatment")
+  voom_fit <- limma::voom(dge, design, plot = FALSE)
+  fit <- limma::lmFit(voom_fit, design)
+  contrast <- limma::makeContrasts(treatment - control, levels = design)
+  fit <- limma::contrasts.fit(fit, contrast)
+  fit <- limma::eBayes(fit)
+  deg <- limma::topTable(fit, number = Inf, sort.by = "P")
+
+  make_analysis_result(
+    deg = deg,
+    mat = voom_fit$E,
+    groups = groups,
+    feature_id = feature_id,
+    control_group = control_group,
+    treatment_group = treatment_group,
+    p_cutoff = p_cutoff,
+    logfc_cutoff = logfc_cutoff,
+    p_column = p_column,
+    annotation = annotation,
+    transformed = TRUE,
+    normalized = TRUE,
+    data_type = "RNA-seq raw counts",
+    analysis_method = "limma-voom"
+  )
+}
+
+run_analysis_by_data_type <- function(expr_df, id_col, data_type, count_method,
+                                      log_mode, normalize_between_arrays,
+                                      group_df, control_group, treatment_group,
+                                      p_cutoff, logfc_cutoff, p_column,
+                                      annotation, count_min_total = 2) {
+  auto_guess <- NULL
+  requested_data_type <- data_type %||% "auto"
+  if (identical(requested_data_type, "auto")) {
+    auto_guess <- guess_expression_data_type(expr_df, id_col)
+    data_type <- if (!is.null(auto_guess)) auto_guess$recommended else "normalized"
+  }
+
+  if (identical(data_type, "rnaseq_counts")) {
+    prepared <- prepare_count_expression(expr_df, id_col, min_total_count = count_min_total)
+    if (identical(count_method, "edger")) {
+      out <- run_edger_analysis(
+        prepared, group_df, control_group, treatment_group,
+        p_cutoff, logfc_cutoff, p_column, annotation
+      )
+    } else if (identical(count_method, "voom")) {
+      out <- run_voom_analysis(
+        prepared, group_df, control_group, treatment_group,
+        p_cutoff, logfc_cutoff, p_column, annotation
+      )
+    } else {
+      out <- run_deseq2_analysis(
+        prepared, group_df, control_group, treatment_group,
+        p_cutoff, logfc_cutoff, p_column, annotation
+      )
+    }
+    if (identical(requested_data_type, "auto")) {
+      out$data_type <- paste0("自动识别：", out$data_type)
+      out$auto_guess <- auto_guess
+    }
+    return(out)
+  }
+
+  normalize <- isTRUE(normalize_between_arrays) && identical(data_type, "normalized")
+  prepared <- prepare_expression(expr_df, id_col, log_mode, normalize)
+  result <- run_differential_analysis(
+    prepared = prepared,
+    group_df = group_df,
+    control_group = control_group,
+    treatment_group = treatment_group,
+    p_cutoff = p_cutoff,
+    logfc_cutoff = logfc_cutoff,
+    p_column = p_column,
+    annotation = annotation
+  )
+
+  if (identical(data_type, "rnaseq_tpm_fpkm")) {
+    result$data_type <- "RNA-seq TPM/FPKM/RPKM"
+    result$analysis_method <- "log2 表达量 + limma"
+  } else {
+    result$data_type <- "芯片/已标准化表达矩阵"
+    result$analysis_method <- "limma"
+  }
+  if (identical(requested_data_type, "auto")) {
+    result$data_type <- paste0("自动识别：", result$data_type)
+    result$auto_guess <- auto_guess
+  }
+  result
+}
+
+guess_expression_data_type <- function(df, id_col) {
+  if (is.null(df) || is.null(id_col) || !id_col %in% names(df)) {
+    return(NULL)
+  }
+  sample_cols <- setdiff(names(df), id_col)
+  if (length(sample_cols) < 2) {
+    return(NULL)
+  }
+  mat_df <- df[, sample_cols, drop = FALSE]
+  mat_df[] <- lapply(mat_df, numeric_clean)
+  mat <- as.matrix(mat_df)
+  storage.mode(mat) <- "double"
+  values <- mat[is.finite(mat)]
+  if (length(values) == 0) {
+    return(NULL)
+  }
+
+  integer_fraction <- mean(abs(values - round(values)) <= 1e-6)
+  zero_fraction <- mean(values == 0)
+  min_value <- min(values, na.rm = TRUE)
+  max_value <- max(values, na.rm = TRUE)
+  q99 <- stats::quantile(values, 0.99, na.rm = TRUE)
+
+  if (min_value < 0) {
+    label <- "更像芯片/已标准化表达矩阵"
+    reason <- "数据里有负值，raw count 和 TPM/FPKM 通常不会出现负值。"
+    recommended <- "normalized"
+  } else if (integer_fraction >= 0.99 && q99 >= 20) {
+    label <- "更像 RNA-seq raw counts"
+    reason <- "大部分值都是整数，并且高分位数较大，符合原始 reads/counts 的常见特征。"
+    recommended <- "rnaseq_counts"
+  } else if (integer_fraction < 0.99 && (q99 > 30 || max_value > 100)) {
+    label <- "更像 RNA-seq TPM/FPKM/RPKM"
+    reason <- "数据包含较多小数且数值范围较大，常见于未 log2 的 TPM/FPKM/RPKM。"
+    recommended <- "rnaseq_tpm_fpkm"
+  } else {
+    label <- "更像芯片/已标准化表达矩阵，或已经 log2 的 TPM/FPKM"
+    reason <- "数值整体较小，常见于芯片表达矩阵、GEO normalized matrix 或 log2 后表达量。"
+    recommended <- "normalized"
+  }
+
+  list(
+    label = label,
+    reason = reason,
+    recommended = recommended,
+    integer_fraction = integer_fraction,
+    zero_fraction = zero_fraction,
+    min_value = min_value,
+    max_value = max_value,
+    q99 = as.numeric(q99)
+  )
+}
+
+data_type_guide_ui <- function(guess = NULL) {
+  guess_text <- if (is.null(guess)) {
+    "导入表达矩阵后，这里会给出一个粗略判断。"
+  } else {
+    paste0(
+      guess$label, "：", guess$reason,
+      " 数值范围约为 ", signif(guess$min_value, 4), " 到 ",
+      signif(guess$max_value, 4), "。"
+    )
+  }
+
+  div(
+    class = "analysis-note",
+    h4("不知道自己的数据类型？"),
+    p(strong("软件粗略判断："), guess_text),
+    p(strong("默认自动模式："), "点击“一键开始分析”时，软件会按这个判断自动选择转换方式和差异分析方法。判断错了再手动切换数据类型。"),
+    tags$ul(
+      tags$li(strong("raw counts："), "值基本都是 0、1、2 这种整数，文件名常见 count/counts/readcount。正式 RNA-seq 差异分析优先选这个。"),
+      tags$li(strong("TPM/FPKM/RPKM："), "值经常带小数，文件名常见 TPM、FPKM、RPKM。适合快速探索、作图和通路解释。"),
+      tags$li(strong("芯片/已标准化表达："), "GEO 芯片矩阵或 normalized expression，值通常已经是 log2 后的小数，有时会出现负值。"),
+      tags$li(strong("公司给的差异结果表："), "如果文件已经是 logFC、P 值、padj 那种结果表，它不是表达矩阵，不能直接当作输入矩阵。")
+    ),
+    p("拿不准时：先看文件名；再看数值是不是整数；最后看说明书或让测序公司确认 count、TPM/FPKM 还是 normalized matrix。")
   )
 }
 
@@ -456,7 +937,9 @@ table_for_display <- function(deg) {
   out
 }
 
-make_volcano <- function(result, colors = NULL, label_top_n = 0) {
+make_volcano <- function(result, colors = NULL, label_top_n = 0,
+                         label_up = TRUE, label_down = TRUE,
+                         label_up_n = NULL, label_down_n = NULL) {
   deg <- result$deg
   p_values <- pmax(deg[[result$p_column]], .Machine$double.xmin)
   deg$neg_log10_p <- -log10(p_values)
@@ -492,15 +975,33 @@ make_volcano <- function(result, colors = NULL, label_top_n = 0) {
       legend.position = "top"
     )
 
-  if (label_top_n > 0 && requireNamespace("ggrepel", quietly = TRUE)) {
-    label_df <- deg[deg$change != "stable" & is.finite(deg[[result$p_column]]), , drop = FALSE]
-    label_df <- label_df[order(label_df[[result$p_column]], -abs(label_df$logFC)), , drop = FALSE]
-    label_df <- head(label_df, label_top_n)
+  label_up_n <- label_up_n %||% label_top_n
+  label_down_n <- label_down_n %||% label_top_n
+
+  if (requireNamespace("ggrepel", quietly = TRUE) &&
+      ((isTRUE(label_up) && label_up_n > 0) || (isTRUE(label_down) && label_down_n > 0))) {
+    up_df <- data.frame()
+    down_df <- data.frame()
+    if (isTRUE(label_up) && label_up_n > 0) {
+      up_df <- deg[deg$change == "up" & is.finite(deg[[result$p_column]]), , drop = FALSE]
+      up_df <- up_df[order(up_df[[result$p_column]], -abs(up_df$logFC)), , drop = FALSE]
+      up_df <- head(up_df, label_up_n)
+    }
+    if (isTRUE(label_down) && label_down_n > 0) {
+      down_df <- deg[deg$change == "down" & is.finite(deg[[result$p_column]]), , drop = FALSE]
+      down_df <- down_df[order(down_df[[result$p_column]], -abs(down_df$logFC)), , drop = FALSE]
+      down_df <- head(down_df, label_down_n)
+    }
+    label_parts <- Filter(function(x) nrow(x) > 0, list(up_df, down_df))
+    label_df <- if (length(label_parts) > 0) do.call(rbind, label_parts) else data.frame()
+    if (nrow(label_df) > 0) {
+      label_df <- label_df[!duplicated(label_df$row_id), , drop = FALSE]
+    }
     if (nrow(label_df) > 0) {
       plot <- plot +
         ggrepel::geom_text_repel(
           data = label_df,
-          aes(label = symbol),
+          aes(label = symbol, color = change),
           size = 3.2,
           max.overlaps = Inf,
           box.padding = 0.35,
@@ -606,6 +1107,45 @@ heatmap_matrix <- function(result, top_n = 50) {
   n <- impute_rows_for_plot(n)
   row_sd <- matrixStats::rowSds(n)
   n[row_sd > 0 & is.finite(row_sd), , drop = FALSE]
+}
+
+make_boxplot_df <- function(result, max_genes = 10000) {
+  mat <- impute_rows_for_plot(result$mat)
+  keep_rows <- rowSums(is.finite(mat)) >= 2
+  mat <- mat[keep_rows, , drop = FALSE]
+  if (nrow(mat) == 0 || ncol(mat) == 0) {
+    return(data.frame())
+  }
+  max_genes <- as.integer(max_genes %||% 10000)
+  if (is.finite(max_genes) && nrow(mat) > max_genes) {
+    set.seed(2026)
+    mat <- mat[sort(sample(seq_len(nrow(mat)), max_genes)), , drop = FALSE]
+  }
+  data.frame(
+    sample = rep(colnames(mat), each = nrow(mat)),
+    group = rep(result$groups, each = nrow(mat)),
+    expression = as.vector(mat),
+    stringsAsFactors = FALSE
+  )
+}
+
+make_boxplot_plot <- function(result, max_genes = 10000, show_outliers = FALSE) {
+  df <- make_boxplot_df(result, max_genes = max_genes)
+  validate(need(nrow(df) > 0, "当前数据不足以绘制箱线图。"))
+  ggplot(df, aes(x = sample, y = expression, fill = group)) +
+    geom_boxplot(
+      outlier.shape = if (isTRUE(show_outliers)) 16 else NA,
+      outlier.size = 0.5,
+      linewidth = 0.35
+    ) +
+    stat_summary(fun = median, geom = "point", shape = 21, size = 1.8, fill = "#111827", color = "#ffffff") +
+    labs(x = "Sample", y = "Expression", fill = "Group") +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "top",
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)
+    )
 }
 
 expression_with_symbols <- function(result) {
@@ -884,6 +1424,180 @@ run_ppi_analysis <- function(result, ppi_table, score_cutoff = 0.7, max_genes = 
   )
 }
 
+parse_gene_list <- function(text) {
+  if (is.null(text) || !nzchar(trimws(text))) {
+    return(character())
+  }
+  genes <- unlist(strsplit(text, "[,;[:space:]]+"))
+  genes <- trim_text(genes)
+  unique(genes[!is.na(genes) & nzchar(genes)])
+}
+
+ppi_gene_table <- function(result, gene_source = "significant",
+                           custom_gene_text = NULL, max_genes = 1000) {
+  deg <- result$deg
+  deg$change <- as.character(deg$change)
+  if (identical(gene_source, "custom")) {
+    requested <- parse_gene_list(custom_gene_text)
+    if (length(requested) < 2) {
+      stop("自定义 PPI 至少需要输入 2 个基因名或基因 ID。")
+    }
+    by_symbol <- deg[match(requested, deg$symbol), , drop = FALSE]
+    by_feature <- deg[match(requested, deg$feature_id), , drop = FALSE]
+    use_feature <- is.na(by_symbol$symbol) | !nzchar(by_symbol$symbol)
+    matched <- by_symbol
+    matched[use_feature, ] <- by_feature[use_feature, ]
+    out <- data.frame(
+      query = requested,
+      symbol = matched$symbol,
+      feature_id = matched$feature_id,
+      change = matched$change,
+      logFC = matched$logFC,
+      P.Value = matched$P.Value,
+      adj.P.Val = matched$adj.P.Val,
+      stringsAsFactors = FALSE
+    )
+    missing <- is.na(out$symbol) | !nzchar(out$symbol)
+    out$symbol[missing] <- out$query[missing]
+    out$feature_id[missing] <- out$query[missing]
+    out$change[is.na(out$change) | !nzchar(out$change)] <- "not_tested"
+    return(out[!duplicated(out$symbol), , drop = FALSE])
+  }
+
+  sig <- deg[deg$change != "stable" & !is.na(deg$symbol) & nzchar(deg$symbol), , drop = FALSE]
+  sig <- sig[order(sig[[result$p_column]], -abs(sig$logFC)), , drop = FALSE]
+  sig <- sig[!duplicated(sig$symbol), , drop = FALSE]
+  if (nrow(sig) > max_genes) {
+    sig <- sig[seq_len(max_genes), , drop = FALSE]
+  }
+  data.frame(
+    query = sig$symbol,
+    symbol = sig$symbol,
+    feature_id = sig$feature_id,
+    change = sig$change,
+    logFC = sig$logFC,
+    P.Value = sig$P.Value,
+    adj.P.Val = sig$adj.P.Val,
+    stringsAsFactors = FALSE
+  )
+}
+
+fetch_string_interactions <- function(genes, score_cutoff = 0.7) {
+  genes <- unique(genes[!is.na(genes) & nzchar(genes)])
+  if (length(genes) < 2) {
+    return(data.frame())
+  }
+  if (length(genes) > 400) {
+    genes <- genes[seq_len(400)]
+  }
+  required_score <- max(0, min(1000, round(score_cutoff * 1000)))
+  url <- paste0(
+    "https://string-db.org/api/tsv/network?identifiers=",
+    utils::URLencode(paste(genes, collapse = "\r"), reserved = TRUE),
+    "&species=9606&required_score=", required_score,
+    "&caller_identity=BioInsight"
+  )
+  df <- tryCatch(
+    read.delim(url, check.names = FALSE, stringsAsFactors = FALSE),
+    error = function(e) {
+      stop("无法在线读取 STRING 互作。请检查网络，或上传 STRING interaction 文件。")
+    }
+  )
+  if (nrow(df) == 0) {
+    return(data.frame())
+  }
+  node1_col <- if ("preferredName_A" %in% names(df)) "preferredName_A" else "stringId_A"
+  node2_col <- if ("preferredName_B" %in% names(df)) "preferredName_B" else "stringId_B"
+  score_col <- if ("score" %in% names(df)) "score" else if ("combined_score" %in% names(df)) "combined_score" else NULL
+  out <- data.frame(
+    node1 = trim_text(df[[node1_col]]),
+    node2 = trim_text(df[[node2_col]]),
+    combined_score = if (!is.null(score_col)) numeric_clean(df[[score_col]]) else 1,
+    stringsAsFactors = FALSE
+  )
+  out[!is.na(out$node1) & !is.na(out$node2) & nzchar(out$node1) & nzchar(out$node2), , drop = FALSE]
+}
+
+run_ppi_analysis <- function(result, ppi_table = NULL, score_cutoff = 0.7,
+                             max_genes = 1000, gene_source = "significant",
+                             custom_gene_text = NULL,
+                             interaction_source = "local") {
+  gene_info <- ppi_gene_table(
+    result,
+    gene_source = gene_source,
+    custom_gene_text = custom_gene_text,
+    max_genes = max_genes
+  )
+  genes <- unique(gene_info$symbol)
+  if (length(genes) < 2) {
+    stop("可用于 PPI 的基因少于 2 个，无法构建网络。")
+  }
+
+  if (identical(interaction_source, "string_online")) {
+    ppi_table <- fetch_string_interactions(genes, score_cutoff = score_cutoff)
+  }
+  if (is.null(ppi_table) || nrow(ppi_table) == 0) {
+    stop("没有可用的 PPI 互作表。可选择在线 STRING，或上传 STRING interaction 文件。")
+  }
+
+  score <- ppi_table$combined_score
+  if (length(score) == 0 || all(!is.finite(score))) {
+    score <- rep(1, nrow(ppi_table))
+  }
+  if (max(score, na.rm = TRUE) > 1) {
+    score <- score / 1000
+  }
+  keep_edge <- ppi_table$node1 %in% genes & ppi_table$node2 %in% genes & score >= score_cutoff
+  edges <- ppi_table[keep_edge, , drop = FALSE]
+  edges$score <- score[keep_edge]
+  if (nrow(edges) == 0) {
+    stop("当前阈值下没有 PPI 边。请降低 combined_score 阈值、增加基因数，或改用在线 STRING。")
+  }
+
+  vertices <- data.frame(name = unique(c(edges$node1, edges$node2)), stringsAsFactors = FALSE)
+  vertices$change <- gene_info$change[match(vertices$name, gene_info$symbol)]
+  vertices$logFC <- gene_info$logFC[match(vertices$name, gene_info$symbol)]
+  vertices$feature_id <- gene_info$feature_id[match(vertices$name, gene_info$symbol)]
+  vertices$query <- gene_info$query[match(vertices$name, gene_info$symbol)]
+  vertices$change[is.na(vertices$change) | !nzchar(vertices$change)] <- "not_tested"
+  graph <- igraph::graph_from_data_frame(edges[, c("node1", "node2", "score")], directed = FALSE, vertices = vertices)
+  graph <- igraph::simplify(graph, remove.multiple = TRUE, remove.loops = TRUE, edge.attr.comb = "max")
+
+  centrality <- data.frame(
+    symbol = igraph::V(graph)$name,
+    degree = as.numeric(igraph::degree(graph)),
+    betweenness = as.numeric(igraph::betweenness(graph, normalized = TRUE)),
+    closeness = as.numeric(igraph::closeness(graph, normalized = TRUE)),
+    stringsAsFactors = FALSE
+  )
+  centrality$change <- igraph::V(graph)$change
+  centrality$logFC <- igraph::V(graph)$logFC
+  centrality$abs_logFC <- abs(centrality$logFC)
+  centrality$feature_id <- igraph::V(graph)$feature_id
+  centrality$query <- igraph::V(graph)$query
+  centrality <- centrality[order(-centrality$degree, -centrality$betweenness, -abs(centrality$logFC)), ]
+  rownames(centrality) <- NULL
+
+  communities <- tryCatch(igraph::cluster_louvain(graph), error = function(e) NULL)
+  if (!is.null(communities)) {
+    centrality$community <- igraph::membership(communities)[centrality$symbol]
+  } else {
+    centrality$community <- NA_integer_
+  }
+
+  list(
+    graph = graph,
+    hubs = centrality,
+    edges = edges,
+    gene_source = gene_source,
+    interaction_source = interaction_source,
+    score_cutoff = score_cutoff,
+    max_genes = max_genes,
+    control_group = result$control_group,
+    treatment_group = result$treatment_group
+  )
+}
+
 make_ppi_plot <- function(ppi_result, label_top_n = 15) {
   graph <- ppi_result$graph
   hubs <- ppi_result$hubs
@@ -892,7 +1606,9 @@ make_ppi_plot <- function(ppi_result, label_top_n = 15) {
     igraph::V(graph)$change == "up", "#dc2626",
     ifelse(igraph::V(graph)$change == "down", "#2563eb", "#9ca3af")
   )
-  vertex_size <- 5 + 3 * log1p(igraph::degree(graph))
+  vertex_logfc <- abs(as.numeric(igraph::V(graph)$logFC))
+  vertex_logfc[!is.finite(vertex_logfc)] <- 0
+  vertex_size <- 5 + 2.5 * log1p(igraph::degree(graph)) + 2.2 * pmin(vertex_logfc, 4)
   labels <- ifelse(igraph::V(graph)$name %in% top_labels, igraph::V(graph)$name, NA)
   set.seed(2026)
   plot(
@@ -905,7 +1621,7 @@ make_ppi_plot <- function(ppi_result, label_top_n = 15) {
     vertex.label.color = "#111827",
     edge.width = 1 + 2 * igraph::E(graph)$score,
     edge.color = "#cbd5e1",
-    main = "PPI network"
+    main = "PPI network: color = direction, size = degree + |logFC|"
   )
   legend(
     "topleft",
@@ -937,6 +1653,219 @@ ppi_interpretation <- function(ppi_result) {
   )
 }
 
+enrichment_symbols_by_direction <- function(result, direction) {
+  deg <- result$deg
+  deg <- deg[!is.na(deg$symbol) & nzchar(deg$symbol), , drop = FALSE]
+  if (identical(direction, "up")) {
+    return(unique(deg$symbol[deg$change == "up"]))
+  }
+  if (identical(direction, "down")) {
+    return(unique(deg$symbol[deg$change == "down"]))
+  }
+  unique(deg$symbol[deg$change != "stable"])
+}
+
+map_symbols_to_entrez <- function(symbols) {
+  symbols <- unique(symbols[!is.na(symbols) & nzchar(symbols)])
+  if (length(symbols) == 0) {
+    return(data.frame(SYMBOL = character(), ENTREZID = character()))
+  }
+  suppressMessages(clusterProfiler::bitr(
+    symbols,
+    fromType = "SYMBOL",
+    toType = "ENTREZID",
+    OrgDb = org.Hs.eg.db::org.Hs.eg.db
+  ))
+}
+
+run_single_enrichment <- function(entrez_ids, universe_ids, collection,
+                                  p_cutoff, group_label) {
+  entrez_ids <- unique(entrez_ids[!is.na(entrez_ids) & nzchar(entrez_ids)])
+  universe_ids <- unique(universe_ids[!is.na(universe_ids) & nzchar(universe_ids)])
+  if (length(entrez_ids) == 0) {
+    return(data.frame())
+  }
+
+  if (identical(collection, "KEGG")) {
+    enriched <- suppressMessages(clusterProfiler::enrichKEGG(
+      gene = entrez_ids,
+      universe = universe_ids,
+      organism = "hsa",
+      keyType = "ncbi-geneid",
+      pvalueCutoff = 1,
+      pAdjustMethod = "BH",
+      qvalueCutoff = 1
+    ))
+    enriched <- tryCatch(
+      suppressMessages(clusterProfiler::setReadable(
+        enriched,
+        OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+        keyType = "ENTREZID"
+      )),
+      error = function(e) enriched
+    )
+  } else {
+    ont <- sub("^GO_", "", collection)
+    enriched <- suppressMessages(clusterProfiler::enrichGO(
+      gene = entrez_ids,
+      universe = universe_ids,
+      OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+      keyType = "ENTREZID",
+      ont = ont,
+      pAdjustMethod = "BH",
+      pvalueCutoff = 1,
+      qvalueCutoff = 1,
+      readable = TRUE
+    ))
+  }
+
+  table <- as.data.frame(enriched)
+  if (nrow(table) == 0) {
+    return(table)
+  }
+  table$gene_group <- group_label
+  table$collection <- ifelse(identical(collection, "KEGG"), "KEGG", gsub("_", " ", collection))
+  table <- table[order(table$p.adjust, table$pvalue), , drop = FALSE]
+  table
+}
+
+run_enrichment_analysis <- function(result, direction = "separate",
+                                    collection = "GO_BP", p_cutoff = 0.05,
+                                    min_genes = 5) {
+  deg <- result$deg
+  universe_symbols <- unique(deg$symbol[!is.na(deg$symbol) & nzchar(deg$symbol)])
+  mapping <- map_symbols_to_entrez(universe_symbols)
+  if (nrow(mapping) == 0) {
+    stop("无法把基因 SYMBOL 转换为 ENTREZID。请确认是否为人类基因 SYMBOL，或提供注释表。")
+  }
+  universe_ids <- unique(mapping$ENTREZID)
+
+  groups <- switch(
+    direction,
+    up = list("上调基因" = enrichment_symbols_by_direction(result, "up")),
+    down = list("下调基因" = enrichment_symbols_by_direction(result, "down")),
+    combined = list("上调+下调合并" = enrichment_symbols_by_direction(result, "combined")),
+    separate = list(
+      "上调基因" = enrichment_symbols_by_direction(result, "up"),
+      "下调基因" = enrichment_symbols_by_direction(result, "down")
+    ),
+    list("上调+下调合并" = enrichment_symbols_by_direction(result, "combined"))
+  )
+
+  tables <- lapply(names(groups), function(label) {
+    symbols <- unique(groups[[label]])
+    entrez <- unique(mapping$ENTREZID[match(symbols, mapping$SYMBOL)])
+    entrez <- entrez[!is.na(entrez)]
+    if (length(entrez) < min_genes) {
+      return(data.frame())
+    }
+    run_single_enrichment(
+      entrez_ids = entrez,
+      universe_ids = universe_ids,
+      collection = collection,
+      p_cutoff = p_cutoff,
+      group_label = label
+    )
+  })
+  table <- do.call(rbind, Filter(function(x) nrow(x) > 0, tables))
+  if (is.null(table)) {
+    table <- data.frame()
+  }
+  rownames(table) <- NULL
+
+  list(
+    table = table,
+    direction = direction,
+    collection = collection,
+    collection_label = ifelse(identical(collection, "KEGG"), "KEGG", gsub("_", " ", collection)),
+    p_cutoff = p_cutoff,
+    min_genes = min_genes,
+    control_group = result$control_group,
+    treatment_group = result$treatment_group
+  )
+}
+
+top_enrichment_rows <- function(enrichment_result, show_n = 15) {
+  table <- enrichment_result$table
+  if (nrow(table) == 0) {
+    return(table)
+  }
+  sig <- table[is.finite(table$p.adjust) & table$p.adjust <= enrichment_result$p_cutoff, , drop = FALSE]
+  use_table <- if (nrow(sig) > 0) sig else table
+  parts <- split(use_table, use_table$gene_group)
+  out <- do.call(rbind, lapply(parts, function(x) head(x[order(x$p.adjust, x$pvalue), , drop = FALSE], show_n)))
+  rownames(out) <- NULL
+  out
+}
+
+make_enrichment_plot <- function(enrichment_result, show_n = 15) {
+  table <- top_enrichment_rows(enrichment_result, show_n)
+  validate(need(nrow(table) > 0, "当前阈值和基因数下没有可绘制的富集条目。"))
+  table$Description <- factor(table$Description, levels = rev(unique(table$Description)))
+  plot <- ggplot(table, aes(x = Count, y = Description, color = p.adjust, size = Count)) +
+    geom_point(alpha = 0.9) +
+    scale_color_gradient(low = "#dc2626", high = "#2563eb", trans = "reverse") +
+    labs(x = "Gene count", y = NULL, color = "padj", size = "genes") +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank())
+  if (length(unique(table$gene_group)) > 1) {
+    plot <- plot + facet_wrap(~gene_group, scales = "free_y")
+  }
+  plot
+}
+
+enrichment_interpretation <- function(enrichment_result) {
+  table <- enrichment_result$table
+  if (nrow(table) == 0) {
+    return(paste0(
+      "当前选择下没有得到富集条目。常见原因是显著差异基因太少、基因 ID 不是人类 SYMBOL，或者 KEGG/GO 能匹配到的基因不足。"
+    ))
+  }
+  sig <- table[is.finite(table$p.adjust) & table$p.adjust <= enrichment_result$p_cutoff, , drop = FALSE]
+  use_table <- if (nrow(sig) > 0) sig else head(table, 5)
+  parts <- split(use_table, use_table$gene_group)
+  txt <- paste(vapply(names(parts), function(group_name) {
+    top_terms <- paste(head(parts[[group_name]]$Description, 3), collapse = "；")
+    paste0(group_name, "主要富集在：", top_terms)
+  }, character(1)), collapse = "。")
+
+  if (nrow(sig) == 0) {
+    paste0(
+      "当前 padj <= ", enrichment_result$p_cutoff,
+      " 下没有显著富集条目，但排名靠前的趋势项可作为探索参考。", txt,
+      "。富集分析的意义是把一串基因翻译成更容易理解的功能或通路。"
+    )
+  } else {
+    paste0(
+      enrichment_result$collection_label, " 富集分析显示：", txt,
+      "。这说明差异基因不是随机分散的，而是集中影响了这些功能或通路。"
+    )
+  }
+}
+
+format_gsea_gene_list <- function(x) {
+  x <- trim_text(x)
+  x[is.na(x)] <- ""
+  out <- vapply(x, function(item) {
+    genes <- unlist(strsplit(item, "/", fixed = TRUE))
+    genes <- trim_text(genes)
+    genes <- genes[!is.na(genes) & nzchar(genes)]
+    paste(unique(genes), collapse = ", ")
+  }, character(1))
+  unname(out)
+}
+
+count_gsea_gene_list <- function(x) {
+  formatted <- format_gsea_gene_list(x)
+  out <- vapply(strsplit(formatted, ", ", fixed = TRUE), function(genes) {
+    if (length(genes) == 1 && !nzchar(genes[1])) {
+      return(0L)
+    }
+    length(genes)
+  }, integer(1))
+  unname(out)
+}
+
 run_gsea_analysis <- function(result, ontology = "BP", min_size = 10,
                               max_size = 500, p_cutoff = 0.25) {
   deg <- result$deg
@@ -963,30 +1892,68 @@ run_gsea_analysis <- function(result, ontology = "BP", min_size = 10,
     stop("SYMBOL 转 ENTREZID 后可用于 GSEA 的基因少于 100 个。请检查物种或注释。")
   }
 
-  gsea <- suppressMessages(clusterProfiler::gseGO(
-    geneList = gene_list,
-    OrgDb = org.Hs.eg.db::org.Hs.eg.db,
-    keyType = "ENTREZID",
-    ont = ontology,
-    minGSSize = min_size,
-    maxGSSize = max_size,
-    pvalueCutoff = 1,
-    pAdjustMethod = "BH",
-    verbose = FALSE
-  ))
-  gsea <- suppressMessages(clusterProfiler::setReadable(
-    gsea,
-    OrgDb = org.Hs.eg.db::org.Hs.eg.db,
-    keyType = "ENTREZID"
-  ))
+  if (identical(ontology, "KEGG")) {
+    gsea <- suppressMessages(clusterProfiler::gseKEGG(
+      geneList = gene_list,
+      organism = "hsa",
+      keyType = "ncbi-geneid",
+      minGSSize = min_size,
+      maxGSSize = max_size,
+      pvalueCutoff = 1,
+      pAdjustMethod = "BH",
+      verbose = FALSE
+    ))
+    gsea <- tryCatch(
+      suppressMessages(clusterProfiler::setReadable(
+        gsea,
+        OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+        keyType = "ENTREZID"
+      )),
+      error = function(e) gsea
+    )
+  } else {
+    gsea <- suppressMessages(clusterProfiler::gseGO(
+      geneList = gene_list,
+      OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+      keyType = "ENTREZID",
+      ont = ontology,
+      minGSSize = min_size,
+      maxGSSize = max_size,
+      pvalueCutoff = 1,
+      pAdjustMethod = "BH",
+      verbose = FALSE
+    ))
+    gsea <- suppressMessages(clusterProfiler::setReadable(
+      gsea,
+      OrgDb = org.Hs.eg.db::org.Hs.eg.db,
+      keyType = "ENTREZID"
+    ))
+  }
   table <- as.data.frame(gsea)
   if (nrow(table) > 0) {
+    if ("core_enrichment" %in% names(table)) {
+      table$core_enrichment_genes <- format_gsea_gene_list(table$core_enrichment)
+      table$leading_edge_genes <- table$core_enrichment_genes
+      table$core_enrichment_gene_count <- count_gsea_gene_list(table$core_enrichment)
+    }
+    if ("leading_edge" %in% names(table)) {
+      table$leading_edge_summary <- table$leading_edge
+    }
     table$bias <- ifelse(table$NES > 0, result$treatment_group, result$control_group)
     table$direction <- ifelse(
       table$NES > 0,
       paste0("偏向 ", result$treatment_group),
       paste0("偏向 ", result$control_group)
     )
+    priority_cols <- c(
+      "ID", "Description", "setSize", "enrichmentScore", "NES",
+      "pvalue", "p.adjust", "qvalue", "rank",
+      "core_enrichment_gene_count", "core_enrichment_genes",
+      "leading_edge_genes", "leading_edge_summary",
+      "bias", "direction", "core_enrichment", "leading_edge"
+    )
+    table <- table[, c(priority_cols[priority_cols %in% names(table)],
+                       setdiff(names(table), priority_cols)), drop = FALSE]
     table <- table[order(table$p.adjust, -abs(table$NES)), , drop = FALSE]
   }
   list(
@@ -994,6 +1961,7 @@ run_gsea_analysis <- function(result, ontology = "BP", min_size = 10,
     table = table,
     gene_list = gene_list,
     ontology = ontology,
+    collection_label = ifelse(identical(ontology, "KEGG"), "KEGG", paste0("GO ", ontology)),
     p_cutoff = p_cutoff,
     control_group = result$control_group,
     treatment_group = result$treatment_group
@@ -1024,10 +1992,33 @@ make_gsea_plot <- function(gsea_result, show_n = 15) {
     theme(panel.grid.minor = element_blank())
 }
 
+make_gsea_running_plot <- function(gsea_result, show_n = 5) {
+  validate(need(requireNamespace("enrichplot", quietly = TRUE), "需要安装 enrichplot 才能绘制 GSEA 曲线图。"))
+  table <- gsea_result$table
+  table <- table[is.finite(table$p.adjust) & table$p.adjust <= gsea_result$p_cutoff, , drop = FALSE]
+  if (nrow(table) == 0) {
+    table <- head(gsea_result$table, show_n)
+  } else {
+    table <- head(table, show_n)
+  }
+  validate(need(nrow(table) > 0, "当前 GSEA 没有可绘制的通路。"))
+  ids <- table$ID[seq_len(min(show_n, nrow(table)))]
+  enrichplot::gseaplot2(
+    gsea_result$gsea,
+    geneSetID = ids,
+    title = paste0(gsea_result$collection_label, " running enrichment"),
+    pvalue_table = TRUE
+  )
+}
+
 gsea_interpretation <- function(gsea_result) {
   table <- gsea_result$table
+  collection <- gsea_result$collection_label %||% "GSEA"
   if (nrow(table) == 0) {
-    return("GSEA 没有返回可解释的 GO 条目。建议检查基因 ID 是否为人类 SYMBOL，或改用自定义基因集。")
+    return(paste0(
+      "GSEA 没有返回可解释的 ", collection,
+      " 条目。建议检查基因 ID 是否为人类 SYMBOL；如果运行 KEGG，还需要能访问 KEGG 在线数据库。"
+    ))
   }
   sig <- table[is.finite(table$p.adjust) & table$p.adjust <= gsea_result$p_cutoff, , drop = FALSE]
   if (nrow(sig) == 0) {
@@ -1044,7 +2035,7 @@ gsea_interpretation <- function(gsea_result) {
   pos_txt <- if (nrow(pos) > 0) paste(head(pos$Description, 3), collapse = "；") else "无明显条目"
   neg_txt <- if (nrow(neg) > 0) paste(head(neg$Description, 3), collapse = "；") else "无明显条目"
   paste0(
-    "GSEA 使用全部基因按 logFC 排序，而不是只看过阈值 DEG。NES > 0 表示通路整体偏向 ",
+    collection, " GSEA 使用全部基因按 logFC 排序，而不是只看过阈值 DEG。NES > 0 表示通路整体偏向 ",
     gsea_result$treatment_group, "，NES < 0 表示偏向 ", gsea_result$control_group,
     "。当前显著条目中，", gsea_result$treatment_group, " 方向主要包括：",
     pos_txt, "；", gsea_result$control_group, " 方向主要包括：", neg_txt,
@@ -1090,7 +2081,7 @@ ui <- fluidPage(
       .nav-tabs { margin-top: 8px; }
       .summary-strip {
         display: grid;
-        grid-template-columns: repeat(5, minmax(120px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
         gap: 10px;
         margin: 10px 0 14px;
       }
@@ -1101,7 +2092,13 @@ ui <- fluidPage(
         padding: 10px 12px;
       }
       .metric-label { color: #6b7280; font-size: 12px; }
-      .metric-value { color: #111827; font-size: 22px; font-weight: 650; }
+      .metric-value {
+        color: #111827;
+        font-size: 18px;
+        font-weight: 650;
+        line-height: 1.25;
+        overflow-wrap: anywhere;
+      }
       .hint { color: #6b7280; font-size: 13px; line-height: 1.45; }
       .helper-card {
         background: #f8fafc;
@@ -1254,34 +2251,89 @@ ui <- fluidPage(
         tabPanel(
           "数据检查",
           br(),
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "先确认表达矩阵、分组表和数据类型有没有问题。软件会根据数值特征自动判断 raw counts、TPM/FPKM 或芯片/标准化表达矩阵；这一步决定后面差异分析用哪种统计方法。"
+          ),
+          div(
+            class = "tab-controls",
+            h4("数据类型与转换"),
+            div(
+              class = "control-grid",
+              selectInput(
+                "data_type",
+                "数据类型",
+                choices = c(
+                  "自动识别并选择方法（推荐）" = "auto",
+                  "芯片 / 已标准化表达矩阵（limma）" = "normalized",
+                  "RNA-seq TPM / FPKM / RPKM（log2 后 limma）" = "rnaseq_tpm_fpkm",
+                  "RNA-seq raw counts（DESeq2 / edgeR / voom）" = "rnaseq_counts"
+                ),
+                selected = "auto"
+              ),
+              conditionalPanel(
+                "input.data_type == 'rnaseq_counts' || input.data_type == 'auto'",
+                selectInput(
+                  "count_method",
+                  "raw count 分析方法",
+                  choices = c(
+                    "DESeq2（推荐）" = "deseq2",
+                    "edgeR" = "edger",
+                    "limma-voom" = "voom"
+                  ),
+                  selected = "deseq2"
+                ),
+                numericInput(
+                  "count_min_total",
+                  "raw count 低表达过滤：基因总 counts 至少",
+                  value = 2,
+                  min = 1,
+                  step = 1
+                )
+              ),
+              conditionalPanel(
+                "input.data_type == 'normalized' || input.data_type == 'rnaseq_tpm_fpkm'",
+                selectInput(
+                  "log_mode",
+                  "log2 转换",
+                  choices = c(
+                    "自动判断" = "auto",
+                    "不转换" = "none",
+                    "强制 log2(x + 1)" = "always"
+                  ),
+                  selected = "auto"
+                )
+              ),
+              conditionalPanel(
+                "input.data_type == 'normalized'",
+                checkboxInput("normalize_between_arrays", "样本间分位数标准化", FALSE)
+              )
+            ),
+            uiOutput("data_type_guide")
+          ),
           uiOutput("data_check_ui")
         ),
         tabPanel(
           "分析结果",
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "差异分析会找出两组之间表达明显不同的基因，并给出 log2FC、P 值和校正后 P 值。后面的火山图、热图、富集分析、GSEA、WGCNA 和 PPI 都基于这里的结果。"
+          ),
           div(
             class = "tab-controls",
             h4("差异分析参数"),
             div(
               class = "control-grid",
               selectInput(
-                "log_mode",
-                "log2 转换",
-                choices = c(
-                  "自动判断" = "auto",
-                  "不转换" = "none",
-                  "强制 log2(x + 1)" = "always"
-                ),
-                selected = "auto"
-              ),
-              checkboxInput("normalize_between_arrays", "样本间分位数标准化", FALSE),
-              numericInput("logfc_cutoff", "log2FC 阈值", value = 1, min = 0, step = 0.1),
-              numericInput("p_cutoff", "P 值阈值", value = 0.05, min = 0, max = 1, step = 0.01),
-              selectInput(
                 "p_column",
                 "显著性列",
                 choices = c("P.Value", "adj.P.Val"),
-                selected = "P.Value"
-              )
+                selected = "adj.P.Val"
+              ),
+              numericInput("logfc_cutoff", "log2FC 阈值", value = 1, min = 0, step = 0.1),
+              numericInput("p_cutoff", "P 值阈值", value = 0.05, min = 0, max = 1, step = 0.01)
             ),
             div(
               class = "control-actions",
@@ -1298,12 +2350,20 @@ ui <- fluidPage(
         tabPanel(
           "火山图",
           div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "火山图把每个基因放到一张图里：横轴看变化大小，纵轴看显著程度。它能快速告诉你哪些基因升高、哪些降低，以及最值得优先关注的基因。"
+          ),
+          div(
             class = "tab-controls",
             h4("火山图参数"),
             div(
               class = "control-grid",
               checkboxInput("volcano_label_enabled", "标注显著基因", TRUE),
-              numericInput("volcano_label_top_n", "标注前 N 个基因", value = 10, min = 0, max = 100, step = 1),
+              checkboxInput("volcano_label_up", "标注升高基因", TRUE),
+              numericInput("volcano_label_up_n", "升高标注 Top N", value = 10, min = 0, max = 100, step = 1),
+              checkboxInput("volcano_label_down", "标注降低基因", TRUE),
+              numericInput("volcano_label_down_n", "降低标注 Top N", value = 10, min = 0, max = 100, step = 1),
               colourpicker::colourInput("color_up", "上调颜色", "#dc2626"),
               colourpicker::colourInput("color_stable", "稳定颜色", "#9ca3af"),
               colourpicker::colourInput("color_down", "下调颜色", "#2563eb")
@@ -1314,6 +2374,11 @@ ui <- fluidPage(
         ),
         tabPanel(
           "热图",
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "热图用颜色显示差异基因在每个样本里的表达模式。它能看出两组样本是否按表达模式分开，也能发现某些样本是不是和自己组内其他样本不太像。"
+          ),
           div(
             class = "tab-controls",
             h4("热图参数"),
@@ -1331,7 +2396,31 @@ ui <- fluidPage(
           plotOutput("heatmap_plot", height = "720px")
         ),
         tabPanel(
+          "箱线图",
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "箱线图看每个样本整体表达值的分布是否接近。正常情况下，同一批数据的箱体高度和中位数应该比较一致；如果某个样本明显偏高、偏低或分布很怪，可能是异常样本、批次效应或归一化问题。"
+          ),
+          div(
+            class = "tab-controls",
+            h4("箱线图参数"),
+            div(
+              class = "control-grid",
+              numericInput("boxplot_max_genes", "最多抽样基因数", value = 10000, min = 500, max = 50000, step = 500),
+              checkboxInput("boxplot_show_outliers", "显示离群点", TRUE)
+            )
+          ),
+          downloadButton("download_boxplot", "下载箱线图 PNG"),
+          plotOutput("boxplot_plot", height = "620px")
+        ),
+        tabPanel(
           "PCA",
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "PCA 看样本整体表达谱是否相似。点离得近说明整体表达更像；如果同组样本聚在一起、不同组分开，说明分组信号比较清楚；如果某个点远离所有样本，要重点检查。"
+          ),
           div(
             class = "tab-controls",
             h4("PCA 参数"),
@@ -1345,17 +2434,72 @@ ui <- fluidPage(
           plotOutput("pca_plot", height = "620px")
         ),
         tabPanel(
+          "富集分析",
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "富集分析只拿已经过阈值的显著差异基因来问：这些基因集中在哪些功能、通路或生物过程里。上调、下调分开做能看方向差异；合并做适合看总体受影响的功能主题。"
+          ),
+          div(
+            class = "tab-controls",
+            h4("富集分析参数"),
+            div(
+              class = "control-grid",
+              selectInput(
+                "enrich_direction",
+                "分析哪些差异基因",
+                choices = c(
+                  "上调基因" = "up",
+                  "下调基因" = "down",
+                  "上调+下调合并" = "combined",
+                  "上调和下调分别分析" = "separate"
+                ),
+                selected = "separate"
+              ),
+              selectInput(
+                "enrich_collection",
+                "富集类型",
+                choices = c("GO BP" = "GO_BP", "GO MF" = "GO_MF", "GO CC" = "GO_CC", "KEGG" = "KEGG"),
+                selected = "GO_BP"
+              ),
+              numericInput("enrich_p_cutoff", "padj 阈值", value = 0.05, min = 0, max = 1, step = 0.01),
+              numericInput("enrich_show_n", "图显示条目数", value = 15, min = 5, max = 50, step = 5),
+              numericInput("enrich_min_genes", "最少基因数", value = 5, min = 2, max = 50, step = 1)
+            ),
+            div(
+              class = "control-actions",
+              actionButton("run_enrichment", "运行富集分析", class = "btn-default")
+            )
+          ),
+          uiOutput("enrichment_interpretation"),
+          downloadButton("download_enrichment_table", "下载富集结果表"),
+          plotOutput("enrichment_plot", height = "720px"),
+          h4("富集分析结果"),
+          DT::DTOutput("enrichment_table")
+        ),
+        tabPanel(
           "GSEA",
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "GSEA 不只看显著差异基因，而是把全部基因按变化方向排序，判断某条通路是不是整体偏向某一组。它适合发现一组基因整体轻微但方向一致的变化。"
+          ),
           div(
             class = "tab-controls",
             h4("GSEA 参数"),
             div(
               class = "control-grid",
-              selectInput("gsea_ontology", "GO 类型", choices = c("BP", "MF", "CC"), selected = "BP"),
+              selectInput(
+                "gsea_ontology",
+                "基因集类型",
+                choices = c("GO BP" = "BP", "GO MF" = "MF", "GO CC" = "CC", "KEGG" = "KEGG"),
+                selected = "BP"
+              ),
               numericInput("gsea_min_size", "最小基因集", value = 10, min = 5, max = 100, step = 5),
               numericInput("gsea_max_size", "最大基因集", value = 500, min = 100, max = 2000, step = 50),
               numericInput("gsea_p_cutoff", "padj 阈值", value = 0.25, min = 0, max = 1, step = 0.05),
-              numericInput("gsea_show_n", "图显示条目数", value = 15, min = 5, max = 50, step = 5)
+              numericInput("gsea_show_n", "图显示条目数", value = 15, min = 5, max = 50, step = 5),
+              numericInput("gsea_curve_n", "GSEA 曲线图通路数", value = 5, min = 1, max = 8, step = 1)
             ),
             div(
               class = "control-actions",
@@ -1365,16 +2509,27 @@ ui <- fluidPage(
           uiOutput("gsea_interpretation"),
           downloadButton("download_gsea_table", "下载 GSEA 结果表"),
           plotOutput("gsea_plot", height = "720px"),
+          h4("GSEA running enrichment 曲线图"),
+          plotOutput("gsea_running_plot", height = "760px"),
           h4("GSEA 结果"),
           DT::DTOutput("gsea_table"),
           div(
             class = "analysis-note",
+            "`core_enrichment_genes` / `leading_edge_genes` 是真正推动该通路富集信号的核心基因，适合后续挑候选基因、做验证或放进 PPI 里继续看互作。"
+          ),
+          div(
+            class = "analysis-note",
             h4("为什么使用 GSEA"),
-            "GSEA 使用全部基因按表达变化排序，不只依赖显著差异基因阈值。很多通路不是由单个基因巨大变化驱动，而是一组基因整体轻中度同向变化；GSEA 能捕捉这种整体偏移，因此适合放在差异分析之后解释样本更偏向哪些生物过程。"
+            "GSEA 使用全部基因按表达变化排序，不只依赖显著差异基因阈值。很多通路不是由单个基因巨大变化驱动，而是一组基因整体轻中度同向变化；GSEA 能捕捉这种整体偏移。GO 更适合解释生物过程、分子功能和细胞组分，KEGG 更适合解释代谢通路和经典信号通路。"
           )
         ),
         tabPanel(
           "WGCNA",
+          div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "WGCNA 会把表达模式相似的基因分成模块，再看哪个模块更接近分组差异。它不是找单个基因，而是找一群一起变化的基因模块，适合做机制线索。"
+          ),
           div(
             class = "tab-controls",
             h4("WGCNA 参数"),
@@ -1402,12 +2557,52 @@ ui <- fluidPage(
         tabPanel(
           "PPI",
           div(
+            class = "analysis-note",
+            h4("这一页做什么"),
+            "PPI 把差异基因对应的蛋白放进互作网络里，看哪些蛋白连接最多、位置最关键。它适合从差异基因里筛选后续实验优先验证的 hub genes。"
+          ),
+          div(
             class = "tab-controls",
             h4("PPI 参数"),
+            div(
+              class = "control-grid",
+              selectInput(
+                "ppi_gene_source",
+                "PPI 基因来源",
+                choices = c(
+                  "显著差异基因（默认）" = "significant",
+                  "手动输入几个基因" = "custom"
+                ),
+                selected = "significant"
+              ),
+              selectInput(
+                "ppi_interaction_source",
+                "互作来源",
+                choices = c(
+                  "在线 STRING 自动获取（推荐，会发送基因名）" = "string_online",
+                  "本地/上传 interaction 表" = "local"
+                ),
+                selected = "string_online"
+              )
+            ),
+            conditionalPanel(
+              "input.ppi_gene_source == 'custom'",
+              textAreaInput(
+                "ppi_custom_genes",
+                "自定义基因（基因名或表达矩阵 ID，空格/逗号/换行分隔）",
+                value = "",
+                rows = 4,
+                placeholder = "例如：LEPR HSD3BP5 PDE5A MYLK"
+              )
+            ),
             fileInput(
               "ppi_file",
               "PPI 互作表（可选，默认读取 string_interactions.tsv）",
               accept = c(".tsv", ".txt", ".csv", ".xlsx", ".xls")
+            ),
+            div(
+              class = "analysis-note",
+              "PPI 图中红色表示上调，蓝色表示下调，灰色表示未显著或未在差异表中；节点越大，说明连接数和 |logFC| 综合更高。在线 STRING 会把基因名发送到 STRING 数据库查询互作；不想联网时请上传 STRING interaction 文件。"
             ),
             div(
               class = "control-grid",
@@ -1741,28 +2936,43 @@ server <- function(input, output, session) {
     read_annotation(input$annotation_file, state$annotation)
   })
 
+  output$data_type_guide <- renderUI({
+    guess <- tryCatch(
+      guess_expression_data_type(expr_df(), input$expr_id_col),
+      error = function(e) NULL
+    )
+    data_type_guide_ui(guess)
+  })
+
   analysis_result <- eventReactive(input$run_analysis, {
     validate(need(!identical(input$control_group, input$treatment_group),
                   "对照组和处理组不能相同。"))
 
     withProgress(message = "正在运行差异分析", value = 0, {
       incProgress(0.2, detail = "整理表达矩阵")
-      prepared <- prepare_expression(
-        expr_df(),
-        input$expr_id_col,
-        input$log_mode,
-        input$normalize_between_arrays
-      )
-      incProgress(0.45, detail = "拟合 limma 模型")
-      result <- run_differential_analysis(
-        prepared = prepared,
+      method_label <- if (identical(input$data_type, "auto")) {
+        "自动识别数据类型并选择模型"
+      } else if (identical(input$data_type, "rnaseq_counts")) {
+        paste0("拟合 ", toupper(input$count_method %||% "deseq2"), " 模型")
+      } else {
+        "拟合 limma 模型"
+      }
+      incProgress(0.45, detail = method_label)
+      result <- run_analysis_by_data_type(
+        expr_df = expr_df(),
+        id_col = input$expr_id_col,
+        data_type = input$data_type %||% "normalized",
+        count_method = input$count_method %||% "deseq2",
+        log_mode = input$log_mode %||% "auto",
+        normalize_between_arrays = isTRUE(input$normalize_between_arrays),
         group_df = group_table(),
         control_group = input$control_group,
         treatment_group = input$treatment_group,
         p_cutoff = input$p_cutoff,
         logfc_cutoff = input$logfc_cutoff,
         p_column = input$p_column,
-        annotation = annotation_df()
+        annotation = annotation_df(),
+        count_min_total = input$count_min_total %||% 2
       )
       incProgress(0.8, detail = "生成表格和图形")
       result
@@ -1777,11 +2987,16 @@ server <- function(input, output, session) {
     )
   })
 
-  volcano_label_top_n <- reactive({
+  volcano_label_settings <- reactive({
     if (!isTRUE(input$volcano_label_enabled)) {
-      return(0)
+      return(list(label_up = FALSE, label_down = FALSE, label_up_n = 0, label_down_n = 0))
     }
-    as.integer(input$volcano_label_top_n %||% 0)
+    list(
+      label_up = isTRUE(input$volcano_label_up),
+      label_down = isTRUE(input$volcano_label_down),
+      label_up_n = as.integer(input$volcano_label_up_n %||% 0),
+      label_down_n = as.integer(input$volcano_label_down_n %||% 0)
+    )
   })
 
   heatmap_colors <- reactive({
@@ -1818,8 +3033,27 @@ server <- function(input, output, session) {
         result,
         ppi_table,
         score_cutoff = input$ppi_score_cutoff,
-        max_genes = input$ppi_max_genes
+        max_genes = input$ppi_max_genes,
+        gene_source = input$ppi_gene_source %||% "significant",
+        custom_gene_text = input$ppi_custom_genes %||% "",
+        interaction_source = input$ppi_interaction_source %||% "local"
       )
+    })
+  })
+
+  enrichment_result <- eventReactive(input$run_enrichment, {
+    result <- analysis_result()
+    withProgress(message = "正在运行富集分析", value = 0, {
+      incProgress(0.25, detail = "整理显著差异基因")
+      out <- run_enrichment_analysis(
+        result,
+        direction = input$enrich_direction,
+        collection = input$enrich_collection,
+        p_cutoff = input$enrich_p_cutoff,
+        min_genes = input$enrich_min_genes
+      )
+      incProgress(0.9, detail = "生成富集解释")
+      out
     })
   })
 
@@ -1855,6 +3089,8 @@ server <- function(input, output, session) {
     stable <- as.integer(change_counts["stable"] %||% 0)
     div(
       class = "summary-strip",
+      div(class = "metric", div(class = "metric-label", "数据类型"), div(class = "metric-value", result$data_type %||% "表达矩阵")),
+      div(class = "metric", div(class = "metric-label", "方法"), div(class = "metric-value", result$analysis_method %||% "limma")),
       div(class = "metric", div(class = "metric-label", "基因/探针"), div(class = "metric-value", nrow(result$deg))),
       div(class = "metric", div(class = "metric-label", "样本"), div(class = "metric-value", ncol(result$mat))),
       div(class = "metric", div(class = "metric-label", "上调"), div(class = "metric-value", up)),
@@ -1880,10 +3116,14 @@ server <- function(input, output, session) {
   })
 
   output$volcano_plot <- renderPlot({
+    labels <- volcano_label_settings()
     make_volcano(
       analysis_result(),
       colors = volcano_colors(),
-      label_top_n = volcano_label_top_n()
+      label_up = labels$label_up,
+      label_down = labels$label_down,
+      label_up_n = labels$label_up_n,
+      label_down_n = labels$label_down_n
     )
   })
 
@@ -1914,6 +3154,14 @@ server <- function(input, output, session) {
       color = heatmap_colors(),
       breaks = seq(-3, 3, length.out = 101),
       border_color = NA
+    )
+  })
+
+  output$boxplot_plot <- renderPlot({
+    make_boxplot_plot(
+      analysis_result(),
+      max_genes = input$boxplot_max_genes,
+      show_outliers = isTRUE(input$boxplot_show_outliers)
     )
   })
 
@@ -1960,12 +3208,33 @@ server <- function(input, output, session) {
     )
   })
 
+  output$enrichment_interpretation <- renderUI({
+    div(class = "analysis-note", enrichment_interpretation(enrichment_result()))
+  })
+
+  output$enrichment_plot <- renderPlot({
+    make_enrichment_plot(enrichment_result(), show_n = input$enrich_show_n)
+  })
+
+  output$enrichment_table <- DT::renderDT({
+    DT::datatable(
+      enrichment_result()$table,
+      rownames = FALSE,
+      filter = "top",
+      options = list(pageLength = 20, scrollX = TRUE)
+    )
+  })
+
   output$gsea_interpretation <- renderUI({
     div(class = "analysis-note", gsea_interpretation(gsea_result()))
   })
 
   output$gsea_plot <- renderPlot({
     make_gsea_plot(gsea_result(), show_n = input$gsea_show_n)
+  })
+
+  output$gsea_running_plot <- renderPlot({
+    make_gsea_running_plot(gsea_result(), show_n = input$gsea_curve_n)
   })
 
   output$gsea_table <- DT::renderDT({
@@ -2037,12 +3306,16 @@ server <- function(input, output, session) {
   output$download_volcano <- downloadHandler(
     filename = function() paste0("volcano_", Sys.Date(), ".png"),
     content = function(file) {
+      labels <- volcano_label_settings()
       ggplot2::ggsave(
         file,
         make_volcano(
           analysis_result(),
           colors = volcano_colors(),
-          label_top_n = volcano_label_top_n()
+          label_up = labels$label_up,
+          label_down = labels$label_down,
+          label_up_n = labels$label_up_n,
+          label_down_n = labels$label_down_n
         ),
         width = 8,
         height = 6,
@@ -2061,6 +3334,23 @@ server <- function(input, output, session) {
       )
       validate(need(!is.null(plot), "当前数据不足以绘制 PCA。"))
       ggplot2::ggsave(file, plot, width = 8, height = 6, dpi = 300)
+    }
+  )
+
+  output$download_boxplot <- downloadHandler(
+    filename = function() paste0("boxplot_", Sys.Date(), ".png"),
+    content = function(file) {
+      ggplot2::ggsave(
+        file,
+        make_boxplot_plot(
+          analysis_result(),
+          max_genes = input$boxplot_max_genes,
+          show_outliers = isTRUE(input$boxplot_show_outliers)
+        ),
+        width = 9,
+        height = 6,
+        dpi = 300
+      )
     }
   )
 
@@ -2086,6 +3376,13 @@ server <- function(input, output, session) {
         breaks = seq(-3, 3, length.out = 101),
         border_color = NA
       )
+    }
+  )
+
+  output$download_enrichment_table <- downloadHandler(
+    filename = function() paste0("ORA_enrichment_", Sys.Date(), ".csv"),
+    content = function(file) {
+      write.csv(enrichment_result()$table, file, row.names = FALSE, fileEncoding = "UTF-8")
     }
   )
 
@@ -2118,7 +3415,7 @@ server <- function(input, output, session) {
   )
 
   output$download_gsea_table <- downloadHandler(
-    filename = function() paste0("GSEA_GO_", Sys.Date(), ".csv"),
+    filename = function() paste0("GSEA_", Sys.Date(), ".csv"),
     content = function(file) {
       write.csv(gsea_result()$table, file, row.names = FALSE, fileEncoding = "UTF-8")
     }

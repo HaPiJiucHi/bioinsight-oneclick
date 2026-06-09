@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.5.1
+
+- 修复 featureCounts 注释表自动识别，优先使用 `gene_name`、`symbol`、`gene_symbol` 等列，避免火山图和热图显示数字 ID。
+- RNA-seq raw counts 默认过滤总 counts 小于 2 的极低表达基因，使结果口径更接近常见公司 DESeq2 流程。
+- 修复富集分析和 GSEA 因 SYMBOL 识别失败导致无法运行的问题。
+- GSEA 结果表新增 `core_enrichment_genes`、`leading_edge_genes` 和基因数量统计，并新增 running enrichment 曲线图。
+- PPI 支持显著差异基因或手动输入候选基因，支持在线 STRING 查询；节点颜色表示上调、下调或不显著，节点大小结合连接数和差异幅度。
+- 箱线图默认显示离群点，便于检查特殊样本。
+
+## v1.5.0
+
+- 将数据类型自动识别和转换设置移动到“数据检查”页。
+- 新增“箱线图”页，用于检查样本整体表达分布和特殊样本。
+- 在 PCA 之后、GSEA 之前新增“富集分析”页，支持上调、下调、合并、上/下调分别分析。
+- 富集分析支持 GO BP、GO MF、GO CC 和 KEGG。
+- 每个分析页顶部新增白话解释，说明这一页为什么做、能得到什么。
+- 页面顺序调整为：数据检查、分析结果、火山图、热图、箱线图、PCA、富集分析、GSEA、WGCNA、PPI。
+
+## v1.4.0
+
+- 数据类型默认改为“自动识别并选择方法”，运行时自动匹配 raw counts、TPM/FPKM/RPKM 或芯片/标准化表达矩阵路线。
+- 自动模式下 RNA-seq raw counts 默认使用 `DESeq2`，TPM/FPKM/RPKM 和芯片/标准化矩阵自动使用合适的 `limma` 流程。
+- GSEA 新增 KEGG，和 GO BP/MF/CC 共用同一套排序和解释界面。
+- 火山图新增升高基因、降低基因独立标注开关和 Top N 设置。
+
+## v1.3.0
+
+- 增加数据类型选择：芯片/已标准化表达矩阵、RNA-seq TPM/FPKM/RPKM、RNA-seq raw counts。
+- RNA-seq raw counts 新增 `DESeq2`、`edgeR`、`limma-voom` 三种差异分析方法。
+- 结果摘要新增“数据类型”和“方法”，便于确认本次分析实际使用的模型。
+- 分析结果页新增小白科普和矩阵粗略判断，帮助用户区分 counts、TPM/FPKM 和芯片/标准化矩阵。
+- 依赖安装脚本新增 `DESeq2` 和 `edgeR`。
+
 ## v1.2.1
 
 - 删除公开仓库中的个人视频发布脚本和相关入口。

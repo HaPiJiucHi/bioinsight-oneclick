@@ -1,6 +1,6 @@
 # BioInsight 一键生信分析平台
 
-BioInsight 是一个本地 Windows 桌面式生信分析平台。双击 `BioInsight 一键生信分析平台.exe` 后，软件会启动本地 Shiny 图形界面，用于导入表达矩阵和分组信息，一键完成 DEG、火山图、热图、PCA、GSEA、WGCNA 和 PPI 分析。
+BioInsight 是一个本地 Windows 桌面式生信分析平台。双击 `BioInsight 一键生信分析平台.exe` 后，软件会启动本地 Shiny 图形界面，用于导入表达矩阵和分组信息，一键完成 DEG、火山图、热图、箱线图、PCA、富集分析、GSEA、WGCNA 和 PPI 分析。
 
 ## 启动
 
@@ -36,6 +36,16 @@ start_bioinsight_app.bat
 
 如果数据来自 GEO，推荐下载 `series_matrix.txt.gz`，上传后点击“拆出 GEO 表达矩阵”。在“数据检查”页选择样本信息中的疾病、处理、组织、分型等字段，就可以一键生成分组表。
 
+## 数据类型怎么选
+
+在“数据检查”页默认使用“自动识别并选择方法”。软件会根据矩阵是否为整数、是否有小数、数值范围和是否有负值，自动选择差异分析路线。判断不符合文件说明时，再手动切换：
+
+- `RNA-seq raw counts`：值基本都是整数，文件名常见 count/counts/readcount；正式 RNA-seq 差异分析推荐选这个，自动模式默认 DESeq2，并默认过滤总 counts 小于 2 的极低表达基因。
+- `RNA-seq TPM / FPKM / RPKM`：值常带小数，文件名常见 TPM、FPKM、RPKM；适合快速探索、作图和通路解释。
+- `芯片 / 已标准化表达矩阵`：GEO 芯片或 normalized expression，值通常是 log2 后小数，有时会有负值；使用 limma。
+
+如果文件已经有 logFC、P.Value、padj，它是差异结果表，不是表达矩阵，不能直接作为输入矩阵。
+
 ## 输入格式
 
 表达矩阵示例：
@@ -62,11 +72,12 @@ Disease_2,Disease
 
 1. 导入表达矩阵和分组表，或直接载入当前示例数据。
 2. 从 GEO `series_matrix.txt.gz` 拆出表达矩阵和样本信息。
-3. 使用 `limma` 完成两组 DEG 分析。
-4. 输出完整差异表、显著差异基因表、火山图、热图和 PCA。
-5. GSEA 用全部基因排序解释通路整体偏向，支持 GO BP、MF、CC。
-6. WGCNA 用于寻找与分组相关的共表达模块，并输出模块相关性和模块 hub genes。
-7. PPI 用于基于 STRING 互作表构建差异基因蛋白互作网络，并输出 hub genes。
+3. 自动识别数据类型，并使用 `limma`、`DESeq2`、`edgeR` 或 `limma-voom` 完成两组 DEG 分析。
+4. 输出完整差异表、显著差异基因表、火山图、热图、箱线图和 PCA。
+5. 差异基因富集分析支持上调、下调、合并和上/下调分别分析，支持 GO 和 KEGG。
+6. GSEA 用全部基因排序解释通路整体偏向，支持 GO BP、MF、CC 和 KEGG。
+7. WGCNA 用于寻找与分组相关的共表达模块，并输出模块相关性和模块 hub genes。
+8. PPI 用于基于 STRING 互作表构建差异基因蛋白互作网络，并输出 hub genes。
 
 ## 自测
 
