@@ -1,5 +1,26 @@
 # Release Notes
 
+## v1.5.2
+
+### 富集分析增强
+
+- 下调基因、合并分析、GO/KEGG 的气泡图改为显著条目优先；如果显著条目不足，会自动补充排名靠前的趋势条目，避免图上只剩几条。
+- 新增 `GO All（BP+MF+CC）` 选项，一次运行 GO 三大类，结果表用 `collection` 区分 BP、MF 和 CC。
+
+### PPI 增强
+
+- PPI 自选基因改为从当前表达矩阵/差异结果中搜索选择，不再要求用户随便手打。
+- 支持按 gene symbol 或表达矩阵 feature ID 匹配 PPI 节点；ENSEMBL/ENTREZ ID 会尽量用本地 `org.Hs.eg.db` 转成 SYMBOL。
+- 支持公司同款 STRING link 表，`combined_score` 可为 0-1 或 0-1000。
+- 新增公司风格 Top 6 community 模块图。
+
+### 箱线图与 GSEA
+
+- 箱线图新增“公司 FPKM 风格：log10(value + 0.001)”尺度。导入 FPKM/TPM 矩阵时可复现公司图里负值和样本分布更齐的效果。
+- GSEA running enrichment 图标题新增 NES。
+- 曲线图下方新增对应通路的 core enrichment genes、leading-edge genes、pvalue、padj 和 NES 表。
+- 结果表中的 P 值、padj、qvalue、FDR 默认使用固定小数显示，避免 `1.29e-08` 这种科学计数法。
+
 ## v1.5.1
 
 ### 结果一致性修复

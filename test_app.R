@@ -30,9 +30,12 @@ smart_anno <- read_annotation(
   )
 )
 stopifnot(identical(smart_anno$symbol, c("TP53", "EGFR")))
+path_read_test <- read_ppi_table("string_interactions.tsv")
+stopifnot(all(c("node1", "node2", "combined_score") %in% names(path_read_test)))
 stopifnot(identical(parse_gene_list("LEPR HSD3BP5, PDE5A\nMYLK;RGS18"), c("LEPR", "HSD3BP5", "PDE5A", "MYLK", "RGS18")))
 stopifnot(identical(format_gsea_gene_list(c("TP53/EGFR/MYC", "")), c("TP53, EGFR, MYC", "")))
 stopifnot(identical(count_gsea_gene_list(c("TP53/EGFR/MYC", "")), c(3L, 0L)))
+stopifnot(identical(format_p_decimal(c(0.05, 0.00125, 1.2e-08)), c("0.05", "0.00125", "0.00000001")))
 prepared <- prepare_expression(expr_df, "feature_id", "none", FALSE)
 result <- run_differential_analysis(
   prepared = prepared,
@@ -52,7 +55,26 @@ print(dim(heatmap_matrix(result, 50)))
 print(!is.null(make_volcano(result)))
 print(!is.null(make_volcano(result, label_up = TRUE, label_down = FALSE, label_up_n = 5, label_down_n = 0)))
 print(!is.null(make_boxplot_plot(result, max_genes = 1000)))
+print(!is.null(make_boxplot_plot(result, max_genes = 1000, scale = "log10_input")))
 print(!is.null(make_pca_plot(result)))
+
+ppi_selected <- ppi_gene_table(result, gene_source = "selected", selected_genes = head(result$deg$feature_id, 5))
+stopifnot(nrow(ppi_selected) >= 2)
+ppi_edges_for_test <- data.frame(
+  node1 = ppi_selected$feature_id[1:2],
+  node2 = ppi_selected$feature_id[2:3],
+  combined_score = c(900, 850),
+  stringsAsFactors = FALSE
+)
+ppi_test <- run_ppi_analysis(
+  result,
+  ppi_edges_for_test,
+  score_cutoff = 0.7,
+  gene_source = "selected",
+  selected_genes = ppi_selected$feature_id[1:3],
+  interaction_source = "local"
+)
+stopifnot(igraph::ecount(ppi_test$graph) == 2)
 
 enrich <- run_enrichment_analysis(
   result,
@@ -65,6 +87,17 @@ print(dim(enrich$table))
 if (nrow(enrich$table) > 0) {
   print(!is.null(make_enrichment_plot(enrich, show_n = 5)))
   print(substr(enrichment_interpretation(enrich), 1, 120))
+}
+
+enrich_go_all <- run_enrichment_analysis(
+  result,
+  direction = "combined",
+  collection = "GO_ALL",
+  p_cutoff = 0.05,
+  min_genes = 5
+)
+if (nrow(enrich_go_all$table) > 0) {
+  stopifnot(all(enrich_go_all$table$collection %in% c("GO BP", "GO MF", "GO CC")))
 }
 
 set.seed(2026)

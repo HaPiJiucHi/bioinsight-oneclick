@@ -74,10 +74,10 @@ Disease_2,Disease
 2. 从 GEO `series_matrix.txt.gz` 拆出表达矩阵和样本信息。
 3. 自动识别数据类型，并使用 `limma`、`DESeq2`、`edgeR` 或 `limma-voom` 完成两组 DEG 分析。
 4. 输出完整差异表、显著差异基因表、火山图、热图、箱线图和 PCA。
-5. 差异基因富集分析支持上调、下调、合并和上/下调分别分析，支持 GO 和 KEGG。
-6. GSEA 用全部基因排序解释通路整体偏向，支持 GO BP、MF、CC 和 KEGG。
+5. 差异基因富集分析支持上调、下调、合并和上/下调分别分析，支持 GO BP、MF、CC、GO All 和 KEGG。
+6. GSEA 用全部基因排序解释通路整体偏向，支持 GO BP、MF、CC 和 KEGG，并显示 NES、core enrichment genes 和 leading-edge genes。
 7. WGCNA 用于寻找与分组相关的共表达模块，并输出模块相关性和模块 hub genes。
-8. PPI 用于基于 STRING 互作表构建差异基因蛋白互作网络，并输出 hub genes。
+8. PPI 用于基于 STRING 互作表构建蛋白互作网络，支持显著差异基因或从当前矩阵中搜索选择候选基因，并输出 hub genes。
 
 ## 自测
 

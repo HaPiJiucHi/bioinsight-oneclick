@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.2
+
+- 富集分析绘图改为“显著项优先，不足显示条数时自动补排名靠前的趋势项”，避免下调或合并分析只显示少数几条。
+- 富集分析新增 `GO All（BP+MF+CC）`，可一次合并查看 GO 三大类，并在结果表中保留 `collection` 区分来源。
+- PPI 自选基因改为从当前表达矩阵/差异表中搜索选择，支持按基因名或表达矩阵 ID 检索。
+- PPI 本地/上传 STRING 表支持 node 使用基因名或 feature ID，并新增公司风格 Top 6 模块网络图模式。
+- 箱线图新增显示尺度：分析矩阵、原始输入矩阵、公司 FPKM 风格 `log10(value + 0.001)`、按样本中位数中心化。
+- GSEA running enrichment 图标题新增 NES；图下新增对应通路的 `core_enrichment_genes`、`leading_edge_genes`、pvalue 和 padj 表。
+- 所有结果表中的 P 值、padj、qvalue、FDR 等默认用固定小数显示，避免科学计数法影响阅读。
+- 修复本地路径读取 PPI/表格文件时的路径对象兼容问题。
+
 ## v1.5.1
 
 - 修复 featureCounts 注释表自动识别，优先使用 `gene_name`、`symbol`、`gene_symbol` 等列，避免火山图和热图显示数字 ID。

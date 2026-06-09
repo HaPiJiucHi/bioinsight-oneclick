@@ -6,7 +6,7 @@
 
 [![Windows](https://img.shields.io/badge/Windows-one--click-2563eb)](#一键安装)
 [![R/Shiny](https://img.shields.io/badge/R%20Shiny-local-0f766e)](#本地开发)
-[![Release](https://img.shields.io/badge/Download-v1.5.1-dc2626)](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.5.1)
+[![Release](https://img.shields.io/badge/Download-v1.5.2-dc2626)](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.5.2)
 [![License](https://img.shields.io/badge/License-MIT-111827)](LICENSE)
 
 ![软件界面](docs/assets/software-interface.png)
@@ -23,8 +23,8 @@
 
 ## 一键安装
 
-1. 打开 [Release v1.5.1](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.5.1)。
-2. 下载 `BioInsight-OneClick-Bioinformatics-v1.5.1.zip`。
+1. 打开 [Release v1.5.2](https://github.com/HaPiJiucHi/bioinsight-oneclick/releases/tag/v1.5.2)。
+2. 下载 `BioInsight-OneClick-Bioinformatics-v1.5.2.zip`。
 3. 解压后双击 `BioInsight 一键生信分析平台.exe`。
 4. 第一次运行如果提示缺少依赖，点击“检查依赖”。
 
@@ -93,10 +93,10 @@ flowchart LR
 - 热图支持行聚类、列聚类开关和颜色调整。
 - 箱线图用于检查样本整体表达分布和特殊样本。
 - PCA 支持分组椭圆和分组中心点。
-- 差异基因富集分析支持上调、下调、合并和上/下调分别分析，支持 GO BP、MF、CC 和 KEGG。
-- GSEA 支持 GO BP、MF、CC 和 KEGG。
+- 差异基因富集分析支持上调、下调、合并和上/下调分别分析，支持 GO BP、MF、CC、GO All 和 KEGG。
+- GSEA 支持 GO BP、MF、CC 和 KEGG，running enrichment 区域会显示 NES 和核心基因表。
 - WGCNA 输出模块相关性和模块 hub genes。
-- PPI 支持显著差异基因或手动输入候选基因，支持在线 STRING 查询，也可上传自己的 STRING interaction 文件。
+- PPI 支持显著差异基因或从当前矩阵中搜索选择候选基因，支持在线 STRING 查询，也可上传公司同款 STRING interaction 文件。
 
 ## 本地开发
 

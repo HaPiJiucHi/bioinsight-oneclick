@@ -2,7 +2,7 @@
 
 ## 普通用户
 
-1. 下载 `BioInsight-OneClick-Bioinformatics-v1.5.1.zip`。
+1. 下载 `BioInsight-OneClick-Bioinformatics-v1.5.2.zip`。
 2. 解压到任意英文或中文目录。
 3. 双击 `BioInsight 一键生信分析平台.exe`。
 4. 第一次打开时，如果提示缺少 R 或 R 包，点击“检查依赖”。
